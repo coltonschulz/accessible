@@ -1,7 +1,7 @@
 """NDID Examination Report → Accessible Markdown Converter.
 
-FastAPI backend. Accepts .docx uploads, converts to Markdown via MarkItDown,
-and runs a WCAG 2.1 AA compliance audit on the output.
+FastAPI backend. Accepts .docx and .pdf uploads, converts to Markdown via
+MarkItDown, and runs a WCAG 2.1 AA compliance audit on the output.
 """
 
 import io
@@ -37,40 +37,59 @@ async def index() -> HTMLResponse:
     return HTMLResponse(content=html)
 
 
+_ACCEPTED_EXTENSIONS = {".docx", ".pdf"}
+
+
 @app.post("/convert")
 async def convert(file: UploadFile = File(...)) -> dict[str, Any]:
-    """Convert an uploaded .docx file to Markdown and run compliance audit.
+    """Convert an uploaded .docx or .pdf file to Markdown and run compliance audit.
 
     Args:
-        file: The uploaded .docx file.
+        file: The uploaded .docx or .pdf file.
 
     Returns:
-        A dict with keys ``filename``, ``markdown``, and ``report``.
+        A dict with keys ``filename``, ``markdown``, ``report``, and
+        ``pdf_quality_warning`` (bool, True when input was a PDF).
 
     Raises:
-        HTTPException: 400 if the file is not a .docx or exceeds size limit.
+        HTTPException: 400 if the file type is unsupported or exceeds size limit.
         HTTPException: 422 if MarkItDown fails to parse the file.
     """
-    if not file.filename or not file.filename.lower().endswith(".docx"):
-        raise HTTPException(status_code=400, detail="Only .docx files are accepted.")
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided.")
+
+    ext = Path(file.filename).suffix.lower()
+    if ext not in _ACCEPTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail="Only .docx and .pdf files are accepted.",
+        )
 
     contents = await file.read()
     if len(contents) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="File exceeds 50 MB limit.")
 
+    is_pdf = ext == ".pdf"
+
     # Write to tmp so MarkItDown can open it by path
     tmp_path = _TMP_DIR / f"{os.urandom(8).hex()}_{file.filename}"
     try:
         tmp_path.write_bytes(contents)
-        md_text = _convert_docx(tmp_path)
+        md_text = _convert_file(tmp_path)
         md_text = post_process_markdown(md_text)
-        embedded_images = extract_docx_images(tmp_path)
+        # Image extraction only works for DOCX (zip-based); skip for PDF
+        embedded_images = [] if is_pdf else extract_docx_images(tmp_path)
         report = build_compliance_report(md_text, embedded_images)
     finally:
         tmp_path.unlink(missing_ok=True)
 
     stem = Path(file.filename).stem
-    return {"filename": f"{stem}.md", "markdown": md_text, "report": report}
+    return {
+        "filename": f"{stem}.md",
+        "markdown": md_text,
+        "report": report,
+        "pdf_quality_warning": is_pdf,
+    }
 
 
 @app.post("/download-markdown")
@@ -99,11 +118,11 @@ async def download_markdown(
 # ---------------------------------------------------------------------------
 
 
-def _convert_docx(path: Path) -> str:
-    """Run MarkItDown on a local .docx file and return the Markdown string.
+def _convert_file(path: Path) -> str:
+    """Run MarkItDown on a local .docx or .pdf file and return the Markdown string.
 
     Args:
-        path: Absolute path to the .docx file.
+        path: Absolute path to the file.
 
     Raises:
         HTTPException: 422 if MarkItDown raises any exception.

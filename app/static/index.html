@@ -127,6 +127,20 @@
       display: none;
     }
 
+    /* PDF quality warning */
+    #pdf-warning {
+      margin: 0 20px 14px;
+      padding: 10px 12px;
+      background: rgba(210,153,34,.1);
+      border: 1px solid var(--warn);
+      border-radius: var(--radius);
+      color: var(--warn);
+      font-size: 12px;
+      line-height: 1.5;
+      display: none;
+    }
+    #pdf-warning strong { display: block; margin-bottom: 2px; }
+
     /* Score card */
     #score-card {
       margin: 0 20px 16px;
@@ -357,12 +371,18 @@
         <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
         <path d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/>
       </svg>
-      <p><strong>Drop .docx here</strong><br />or click to select</p>
-      <input type="file" id="file-input" accept=".docx" aria-label="Select a .docx file" />
+      <p><strong>Drop .docx or .pdf here</strong><br />or click to select</p>
+      <input type="file" id="file-input" accept=".docx,.pdf" aria-label="Select a .docx or .pdf file" />
     </div>
 
     <div id="file-name" aria-live="polite"></div>
     <div id="error-msg" role="alert"></div>
+    <div id="pdf-warning" role="note">
+      <strong>PDF output — lower fidelity</strong>
+      PDFs don't embed heading levels or table structure. Heading hierarchy
+      and table issues in this report may reflect the PDF format, not your
+      source document. Re-convert from .docx for best results.
+    </div>
 
     <button id="convert-btn" disabled>Convert to Accessible Markdown</button>
 
@@ -421,6 +441,7 @@
   const fileNameEl    = document.getElementById('file-name');
   const convertBtn    = document.getElementById('convert-btn');
   const errorMsg      = document.getElementById('error-msg');
+  const pdfWarning    = document.getElementById('pdf-warning');
   const scoreCard     = document.getElementById('score-card');
   const scoreValue    = document.getElementById('score-value');
   const wcagGrid      = document.getElementById('wcag-grid');
@@ -453,8 +474,9 @@
   });
 
   function setFile(f) {
-    if (!f.name.toLowerCase().endsWith('.docx')) {
-      showError('Only .docx files are supported.');
+    const ext = f.name.split('.').pop().toLowerCase();
+    if (ext !== 'docx' && ext !== 'pdf') {
+      showError('Only .docx and .pdf files are supported.');
       return;
     }
     selectedFile = f;
@@ -493,6 +515,8 @@
 
   // ── Render output ─────────────────────────────────────────────────────────
   function renderOutput(data) {
+    // PDF quality notice
+    pdfWarning.style.display = data.pdf_quality_warning ? '' : 'none';
     // Preview
     previewPane.innerHTML = simpleMarkdownToHtml(data.markdown);
     // Markdown
