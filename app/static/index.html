@@ -622,18 +622,25 @@
       // POST returns immediately with a job_id — no long-hanging connection
       const form = new FormData();
       form.append('file', selectedFile);
+      console.log('[1] Uploading file...');
       const uploadRes = await fetch('/convert', { method: 'POST', body: form });
+      console.log('[2] Upload response status:', uploadRes.status);
       if (!uploadRes.ok) {
         const err = await uploadRes.json().catch(() => ({ detail: uploadRes.statusText }));
         throw new Error(err.detail || 'Upload failed.');
       }
-      const { job_id } = await uploadRes.json();
+      const uploadJson = await uploadRes.json();
+      console.log('[3] Upload response body:', uploadJson);
+      const { job_id } = uploadJson;
 
       // Poll until complete
+      console.log('[4] Polling job:', job_id);
       const data = await pollJob(job_id);
+      console.log('[5] Job complete, rendering...');
       currentMarkdown = data.markdown;
       currentFilename = data.filename;
       renderOutput(data);
+      console.log('[6] Render complete.');
     } catch (e) {
       console.error('Conversion error:', e);
       showError(e.message || 'An unexpected error occurred — check browser console.');
@@ -645,11 +652,15 @@
   });
 
   async function pollJob(jobId) {
+    let pollCount = 0;
     while (true) {
       await new Promise(r => setTimeout(r, 1500));
+      pollCount++;
       const res = await fetch(`/convert/status/${jobId}`);
+      console.log(`[poll ${pollCount}] status HTTP ${res.status}`);
       if (!res.ok) throw new Error('Lost track of conversion job — please try again.');
       const job = await res.json();
+      console.log(`[poll ${pollCount}] job.status =`, job.status);
       if (job.status === 'complete') return job;
       if (job.status === 'error') throw new Error(job.detail || 'Conversion failed.');
       // status === 'pending' → keep polling
