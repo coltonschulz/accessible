@@ -204,9 +204,14 @@ async def convert(file_id: str = Form(...)) -> dict[str, str]:
         upload["stem"],
         str(_JOBS_DIR),
         stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,   # capture stderr for debugging
+        stderr=asyncio.subprocess.DEVNULL,  # PIPE with no reader can block worker
     )
-    asyncio.create_task(_watch_job(job_id, proc))
+    # Keep a strong reference so the task isn't GC'd before it completes.
+    _bg_tasks: set = getattr(app.state, "bg_tasks", set())
+    task = asyncio.create_task(_watch_job(job_id, proc))
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+    app.state.bg_tasks = _bg_tasks
     return {"job_id": job_id}
 
 
