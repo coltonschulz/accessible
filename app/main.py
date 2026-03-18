@@ -4,16 +4,14 @@ FastAPI backend. Accepts .docx and .pdf uploads, converts to Markdown via
 MarkItDown, and runs a WCAG 2.1 AA compliance audit on the output.
 """
 
-import io
 import os
 import re
-import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import HTMLResponse, Response
 from markitdown import MarkItDown
 
 app = FastAPI(title="NDID Exam Report Converter")
@@ -23,6 +21,7 @@ _TMP_DIR = Path("/tmp/docx_converter")
 _TMP_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+_ACCEPTED_EXTENSIONS = {".docx", ".pdf"}
 
 
 # ---------------------------------------------------------------------------
@@ -35,9 +34,6 @@ async def index() -> HTMLResponse:
     """Serve the single-page UI."""
     html = (_STATIC_DIR / "index.html").read_text(encoding="utf-8")
     return HTMLResponse(content=html)
-
-
-_ACCEPTED_EXTENSIONS = {".docx", ".pdf"}
 
 
 @app.post("/convert")
@@ -71,7 +67,6 @@ async def convert(file: UploadFile = File(...)) -> dict[str, Any]:
 
     is_pdf = ext == ".pdf"
 
-    # Write to tmp so MarkItDown can open it by path
     tmp_path = _TMP_DIR / f"{os.urandom(8).hex()}_{file.filename}"
     try:
         tmp_path.write_bytes(contents)
@@ -119,7 +114,7 @@ async def download_markdown(
 
 
 def _convert_file(path: Path) -> str:
-    """Run MarkItDown on a local .docx or .pdf file and return the Markdown string.
+    """Run MarkItDown on a local .docx or .pdf file and return Markdown.
 
     Args:
         path: Absolute path to the file.
@@ -131,7 +126,7 @@ def _convert_file(path: Path) -> str:
         md = MarkItDown()
         result = md.convert(str(path))
         return result.text_content or ""
-    except Exception as exc:  # MarkItDown surfaces various internal errors
+    except Exception as exc:
         raise HTTPException(
             status_code=422,
             detail=f"MarkItDown conversion failed: {exc}",
@@ -152,17 +147,96 @@ def post_process_markdown(text: str) -> str:
     Returns:
         Cleaned Markdown string.
     """
-    # Collapse 3+ consecutive blank lines to 2
     text = re.sub(r"\n{3,}", "\n\n", text)
-    # Ensure a blank line before every ATX heading
     text = re.sub(r"(?<!\n)\n(#{1,6} )", r"\n\n\1", text)
-    # Ensure a blank line after every ATX heading
     text = re.sub(r"(#{1,6} .+)\n(?!\n)", r"\1\n\n", text)
     return text.strip()
 
 
 # ---------------------------------------------------------------------------
-# Compliance engine
+# Readability helpers  (Flesch Reading Ease, pure Python, no deps)
+# ---------------------------------------------------------------------------
+
+_VOWELS = frozenset("aeiouy")
+
+
+def _count_syllables(word: str) -> int:
+    """Approximate syllable count for one word.
+
+    Args:
+        word: A single word, possibly with trailing punctuation.
+
+    Returns:
+        Syllable count (minimum 1).
+    """
+    word = word.lower().rstrip(".,!?;:'\")")
+    if not word:
+        return 0
+    count = 0
+    prev_vowel = False
+    for ch in word:
+        is_vowel = ch in _VOWELS
+        if is_vowel and not prev_vowel:
+            count += 1
+        prev_vowel = is_vowel
+    # Drop silent trailing 'e' (e.g. "rate", "late")
+    if word.endswith("e") and len(word) > 2 and word[-2] not in _VOWELS and count > 1:
+        count -= 1
+    return max(1, count)
+
+
+def _flesch_reading_ease(text: str) -> float:
+    """Compute the Flesch Reading Ease score for a Markdown document.
+
+    Strips Markdown syntax before analysis. Scores: 90–100 = very easy,
+    60–70 = standard, 30–50 = difficult (typical for insurance/regulatory
+    documents), < 30 = very difficult.
+
+    Args:
+        text: Markdown source.
+
+    Returns:
+        Score from 0.0 to 100.0, rounded to one decimal place.
+    """
+    plain = re.sub(r"[#*`_~\[\]()!>|\\-]", " ", text)
+    plain = re.sub(r"https?://\S+", " ", plain)  # strip URLs
+    plain = re.sub(r"\s+", " ", plain).strip()
+
+    sentences = [s.strip() for s in re.split(r"[.!?]+\s", plain) if s.strip()]
+    words = re.findall(r"\b[a-zA-Z']{1,}\b", plain)
+
+    if not sentences or not words:
+        return 0.0
+
+    syllables = sum(_count_syllables(w) for w in words)
+    asl = len(words) / len(sentences)   # average sentence length
+    asw = syllables / len(words)        # average syllables per word
+    score = 206.835 - 1.015 * asl - 84.6 * asw
+    return round(max(0.0, min(100.0, score)), 1)
+
+
+def _reading_ease_label(score: float) -> str:
+    """Map a Flesch Reading Ease score to a human-readable label.
+
+    Args:
+        score: Flesch score (0–100).
+
+    Returns:
+        Short descriptive label.
+    """
+    if score >= 70:
+        return "Easy (grades 6–7)"
+    if score >= 60:
+        return "Standard (grades 8–9)"
+    if score >= 50:
+        return "Fairly Difficult (grades 10–12)"
+    if score >= 30:
+        return "Difficult (college level)"
+    return "Very Difficult (post-graduate)"
+
+
+# ---------------------------------------------------------------------------
+# Compliance checks
 # ---------------------------------------------------------------------------
 
 
@@ -173,10 +247,10 @@ def check_heading_hierarchy(text: str) -> list[dict[str, Any]]:
         text: Markdown source.
 
     Returns:
-        List of issue dicts (level, line, message).
+        List of issue dicts.
     """
     issues: list[dict[str, Any]] = []
-    headings: list[tuple[int, int]] = []  # (level, line_number)
+    headings: list[tuple[int, int]] = []
 
     for lineno, line in enumerate(text.splitlines(), start=1):
         m = re.match(r"^(#{1,6})\s+\S", line)
@@ -232,8 +306,8 @@ def check_has_h1(text: str) -> list[dict[str, Any]]:
                 {
                     "line": ln,
                     "message": (
-                        f"Multiple H1 headings found (line {h1_lines[0]} and line {ln}). "
-                        "Documents should have a single H1."
+                        f"Multiple H1 headings found (line {h1_lines[0]} and "
+                        f"line {ln}). Documents should have a single H1."
                     ),
                     "wcag": "2.4.2",
                     "severity": "warning",
@@ -309,18 +383,11 @@ def check_empty_links(text: str) -> list[dict[str, Any]]:
     """
     issues: list[dict[str, Any]] = []
     _BAD_TEXT = {
-        "click here",
-        "here",
-        "link",
-        "read more",
-        "more",
-        "this",
-        "url",
-        "website",
+        "click here", "here", "link", "read more",
+        "more", "this", "url", "website",
     }
 
     for lineno, line in enumerate(text.splitlines(), start=1):
-        # Bare URLs not wrapped in <>
         for m in re.finditer(r"(?<!\()(https?://\S+)(?!\))", line):
             issues.append(
                 {
@@ -330,7 +397,6 @@ def check_empty_links(text: str) -> list[dict[str, Any]]:
                     "severity": "warning",
                 }
             )
-        # Non-descriptive link text
         for m in re.finditer(r"\[([^\]]+)\]\(https?://[^)]+\)", line):
             if m.group(1).strip().lower() in _BAD_TEXT:
                 issues.append(
@@ -360,20 +426,12 @@ def check_table_headers(text: str) -> list[dict[str, Any]]:
     lines = text.splitlines()
 
     for i, line in enumerate(lines):
-        if "|" not in line:
+        if "|" not in line or not re.match(r"^\s*\|", line):
             continue
-        # A table row: starts and ends with | OR has multiple cells
-        if not re.match(r"^\s*\|", line):
+        if i + 1 < len(lines) and re.match(r"^\s*\|[\s|:-]+\|", lines[i + 1]):
             continue
-        # Check if the NEXT line is the separator (---) row
-        if i + 1 < len(lines):
-            next_line = lines[i + 1]
-            if re.match(r"^\s*\|[\s|:-]+\|", next_line):
-                continue  # proper table
-        # If the previous line was NOT a separator, flag this row
         if i > 0 and re.match(r"^\s*\|[\s|:-]+\|", lines[i - 1]):
             continue
-        # Looks like a table row without a separator row immediately after
         issues.append(
             {
                 "line": i + 1,
@@ -385,7 +443,7 @@ def check_table_headers(text: str) -> list[dict[str, Any]]:
                 "severity": "warning",
             }
         )
-    # De-duplicate (consecutive table rows produce multiple hits)
+
     seen: set[int] = set()
     deduped = []
     for issue in issues:
@@ -420,7 +478,7 @@ def check_empty_headings(text: str) -> list[dict[str, Any]]:
 
 
 def check_inline_formatting_overuse(text: str) -> list[dict[str, Any]]:
-    """Flag paragraphs where the entire content is bold or italic.
+    """Flag paragraphs where the entire content is bold.
 
     Args:
         text: Markdown source.
@@ -433,7 +491,6 @@ def check_inline_formatting_overuse(text: str) -> list[dict[str, Any]]:
         stripped = line.strip()
         if len(stripped) < 20:
             continue
-        # Entire line wrapped in ** ... **
         if re.match(r"^\*\*[^*]+\*\*$", stripped):
             issues.append(
                 {
@@ -449,6 +506,270 @@ def check_inline_formatting_overuse(text: str) -> list[dict[str, Any]]:
     return issues
 
 
+def check_reading_level(text: str) -> list[dict[str, Any]]:
+    """Check readability using the Flesch Reading Ease scale.
+
+    Insurance regulatory documents typically score 30–50 (college level),
+    which is expected. Scores below 20 suggest a plain language review of
+    summary sections may be warranted.
+
+    This is an advisory check aligned with WCAG 3.1.5 (Level AAA) and
+    plain language best practice for public-facing regulatory documents.
+
+    Args:
+        text: Markdown source.
+
+    Returns:
+        List of at most one issue dict.
+    """
+    score = _flesch_reading_ease(text)
+    if score < 20:
+        return [
+            {
+                "line": None,
+                "message": (
+                    f"Readability score: {score}/100 — Very Difficult. "
+                    "Summary and findings sections should be readable at a general "
+                    "public level. Consider plain language review."
+                ),
+                "wcag": "3.1.5",
+                "severity": "warning",
+            }
+        ]
+    if score < 30:
+        return [
+            {
+                "line": None,
+                "message": (
+                    f"Readability score: {score}/100 — Difficult (post-graduate). "
+                    "Technical regulatory content is expected here, but consider "
+                    "simplifying executive summaries."
+                ),
+                "wcag": "3.1.5",
+                "severity": "info",
+            }
+        ]
+    return []
+
+
+def check_all_caps(text: str) -> list[dict[str, Any]]:
+    """Flag lines where the majority of words are in ALL CAPS.
+
+    Screen readers may spell out ALL CAPS text letter-by-letter depending
+    on user settings, severely degrading the listening experience.
+
+    Args:
+        text: Markdown source.
+
+    Returns:
+        List of issue dicts.
+    """
+    issues: list[dict[str, Any]] = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        # Skip headings, code fences, short lines
+        if not stripped or stripped.startswith(("#", "`", "|")):
+            continue
+        # Only consider words of 3+ chars to ignore abbreviations like "ID"
+        words = re.findall(r"\b[A-Za-z]{3,}\b", stripped)
+        if len(words) < 4:
+            continue
+        caps_count = sum(1 for w in words if w.isupper())
+        if caps_count / len(words) >= 0.6:
+            issues.append(
+                {
+                    "line": lineno,
+                    "message": (
+                        "Excessive ALL CAPS text. Screen readers may read each "
+                        "letter individually. Use title case or sentence case instead."
+                    ),
+                    "wcag": "1.3.1",
+                    "severity": "warning",
+                }
+            )
+    return issues
+
+
+def check_color_references(text: str) -> list[dict[str, Any]]:
+    """Flag uses of color as the sole means of conveying information.
+
+    Patterns like "items shown in red" or "the red cells indicate" signal
+    that a color-only visual distinction may not reach users with color
+    vision deficiencies.
+
+    Args:
+        text: Markdown source.
+
+    Returns:
+        List of issue dicts.
+    """
+    issues: list[dict[str, Any]] = []
+    _COLORS = r"(?:red|green|blue|yellow|orange|purple|pink|gr[ae]y|black|white)"
+    # Match color used as a positional/instructional indicator
+    _PATTERN = re.compile(
+        rf"\b(?:shown?\s+in|marked?\s+in|highlighted?\s+in|colored?\s+in|"
+        rf"displayed?\s+in|appears?\s+in|indicated?\s+in|"
+        rf"the\s+{_COLORS}\s+(?:item|cell|row|column|field|section|text|area|box|"
+        rf"highlight|shading)s?)\b",
+        re.IGNORECASE,
+    )
+
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if _PATTERN.search(line):
+            issues.append(
+                {
+                    "line": lineno,
+                    "message": (
+                        "Color appears to be used as the only means of conveying "
+                        "information. Provide a text-based alternative "
+                        "(e.g. a label, symbol, or note) alongside any color coding."
+                    ),
+                    "wcag": "1.4.1",
+                    "severity": "error",
+                }
+            )
+    return issues
+
+
+def check_unformatted_lists(text: str) -> list[dict[str, Any]]:
+    """Detect lines using manual bullet characters instead of Markdown list syntax.
+
+    Unicode bullets and dashes used as manual list markers (•, –, —, ▪, etc.)
+    are not recognized as lists by Markdown renderers or screen readers.
+
+    Args:
+        text: Markdown source.
+
+    Returns:
+        List of issue dicts, de-duplicated to one per consecutive block.
+    """
+    issues: list[dict[str, Any]] = []
+    # Unicode bullets and em/en dashes used as list starters
+    _MANUAL_BULLET = re.compile(r"^[•·▪◦▸►▶❖]\s|^[–—]\s+\w")
+    # Alphabetical ordered list: "a. Item", "b. Item"
+    _ALPHA_LIST = re.compile(r"^[a-hj-z]\.\s+\w", re.IGNORECASE)
+
+    last_flagged = -2
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if _MANUAL_BULLET.match(stripped) or _ALPHA_LIST.match(stripped):
+            if lineno > last_flagged + 1:  # one issue per block
+                issues.append(
+                    {
+                        "line": lineno,
+                        "message": (
+                            "Manual bullet character detected. Use Markdown list "
+                            "syntax (`- item` or `1. item`) so assistive technology "
+                            "can announce list structure."
+                        ),
+                        "wcag": "1.3.1",
+                        "severity": "error",
+                    }
+                )
+            last_flagged = lineno
+    return issues
+
+
+def check_duplicate_headings(text: str) -> list[dict[str, Any]]:
+    """Flag heading text that appears more than once in the document.
+
+    Duplicate headings break keyboard navigation by making it impossible
+    to distinguish between sections when using a screen reader's heading list.
+
+    Args:
+        text: Markdown source.
+
+    Returns:
+        List of issue dicts for each duplicate occurrence.
+    """
+    issues: list[dict[str, Any]] = []
+    seen: dict[str, int] = {}  # normalised text → first line number
+
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        m = re.match(r"^(#{1,6})\s+(.+)", line)
+        if not m:
+            continue
+        # Normalise: strip inline formatting and case
+        raw = m.group(2).strip()
+        key = re.sub(r"[*_`]", "", raw).lower().strip()
+        if key in seen:
+            issues.append(
+                {
+                    "line": lineno,
+                    "message": (
+                        f'Duplicate heading "{raw}" (first appears at line '
+                        f"{seen[key]}). Each heading must be unique so screen "
+                        "reader users can navigate by heading."
+                    ),
+                    "wcag": "2.4.6",
+                    "severity": "warning",
+                }
+            )
+        else:
+            seen[key] = lineno
+    return issues
+
+
+def check_table_context(text: str) -> list[dict[str, Any]]:
+    """Flag tables not preceded by a heading or descriptive text.
+
+    A table with no surrounding context forces screen reader users to
+    interpret the table without knowing its purpose.
+
+    Args:
+        text: Markdown source.
+
+    Returns:
+        List of issue dicts.
+    """
+    issues: list[dict[str, Any]] = []
+    lines = text.splitlines()
+
+    for i, line in enumerate(lines):
+        if not re.match(r"^\|", line.strip()):
+            continue
+        # Only flag the first row of each table block
+        if i > 0 and re.match(r"^\|", lines[i - 1].strip()):
+            continue
+        # Look back up to 4 lines for a non-blank, non-table line
+        has_context = any(
+            lines[j].strip() and not re.match(r"^\|", lines[j].strip())
+            for j in range(max(0, i - 4), i)
+        )
+        if not has_context:
+            issues.append(
+                {
+                    "line": i + 1,
+                    "message": (
+                        "Table appears without a preceding heading or description. "
+                        "Add a heading or introductory sentence so users understand "
+                        "the table's purpose before encountering it."
+                    ),
+                    "wcag": "1.3.1",
+                    "severity": "warning",
+                }
+            )
+    return issues
+
+
+# ---------------------------------------------------------------------------
+# Report aggregation
+# ---------------------------------------------------------------------------
+
+_WCAG_CRITERIA: dict[str, str] = {
+    "1.1.1": "Non-text Content",
+    "1.3.1": "Info & Relationships",
+    "1.4.1": "Use of Color",
+    "2.4.2": "Page Titled",
+    "2.4.4": "Link Purpose",
+    "2.4.6": "Headings & Labels",
+    "3.1.5": "Reading Level",
+}
+
+# Criteria that are advisory (not strict AA requirements); shown separately
+_ADVISORY_CRITERIA = {"3.1.5"}
+
+
 def build_compliance_report(
     text: str,
     embedded_images: list[str],
@@ -456,13 +777,16 @@ def build_compliance_report(
     """Run all compliance checks and compute a 0–100 score.
 
     Scoring: 100 base − 15 per error − 5 per warning − 1 per info.
+    Advisory issues (readability, AAA criteria) are included in the issues
+    list but do not reduce the score.
 
     Args:
         text: Markdown source text.
         embedded_images: List of embedded media filenames from the source DOCX.
 
     Returns:
-        Report dict with keys ``score``, ``issues``, ``wcag_summary``,
+        Report dict with keys: ``score``, ``conformance_tier``,
+        ``blocking_count``, ``readability``, ``issues``, ``wcag_summary``,
         ``embedded_image_count``.
     """
     issues: list[dict[str, Any]] = []
@@ -473,8 +797,13 @@ def build_compliance_report(
     issues.extend(check_table_headers(text))
     issues.extend(check_empty_headings(text))
     issues.extend(check_inline_formatting_overuse(text))
+    issues.extend(check_all_caps(text))
+    issues.extend(check_color_references(text))
+    issues.extend(check_unformatted_lists(text))
+    issues.extend(check_duplicate_headings(text))
+    issues.extend(check_table_context(text))
+    issues.extend(check_reading_level(text))
 
-    # Flag embedded images that need manual alt text in the output
     for img_name in embedded_images:
         issues.append(
             {
@@ -488,8 +817,11 @@ def build_compliance_report(
             }
         )
 
+    # Score — advisory criteria do not penalise
     score = 100
     for issue in issues:
+        if issue.get("wcag") in _ADVISORY_CRITERIA:
+            continue
         if issue["severity"] == "error":
             score -= 15
         elif issue["severity"] == "warning":
@@ -498,24 +830,40 @@ def build_compliance_report(
             score -= 1
     score = max(0, score)
 
-    # Summarise which WCAG criteria were affected
-    wcag_summary: dict[str, str] = {}
+    # Conformance tier
+    if score >= 90:
+        tier = "Conformant"
+    elif score >= 60:
+        tier = "Partially Conformant"
+    else:
+        tier = "Non-Conformant"
+
+    # Blocking count = errors outside advisory criteria
+    blocking_count = sum(
+        1 for i in issues
+        if i["severity"] == "error" and i.get("wcag") not in _ADVISORY_CRITERIA
+    )
+
+    # Readability (top-level field, independent of the issues list)
+    flesch = _flesch_reading_ease(text)
+    readability = {"score": flesch, "label": _reading_ease_label(flesch)}
+
+    # WCAG criterion summary
     affected = {i["wcag"] for i in issues}
-    all_criteria = {
-        "1.1.1": "Non-text Content",
-        "1.3.1": "Info & Relationships",
-        "2.4.2": "Page Titled",
-        "2.4.4": "Link Purpose",
-        "2.4.6": "Headings & Labels",
-    }
-    for crit, label in all_criteria.items():
-        wcag_summary[crit] = {
+    wcag_summary = {
+        crit: {
             "label": label,
             "status": "fail" if crit in affected else "pass",
+            "advisory": crit in _ADVISORY_CRITERIA,
         }
+        for crit, label in _WCAG_CRITERIA.items()
+    }
 
     return {
         "score": score,
+        "conformance_tier": tier,
+        "blocking_count": blocking_count,
+        "readability": readability,
         "issues": issues,
         "wcag_summary": wcag_summary,
         "embedded_image_count": len(embedded_images),
