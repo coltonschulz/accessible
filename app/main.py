@@ -85,6 +85,15 @@ async def index() -> HTMLResponse:
     return HTMLResponse(content=html)
 
 
+@app.get("/robots.txt", response_class=Response)
+async def robots() -> Response:
+    """Disallow all crawlers — this is a tool, not a content site."""
+    return Response(
+        content="User-agent: *\nDisallow: /\n",
+        media_type="text/plain",
+    )
+
+
 @app.post("/convert")
 async def convert(
     file: UploadFile = File(...),
