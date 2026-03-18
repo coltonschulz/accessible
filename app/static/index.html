@@ -766,8 +766,14 @@
   function renderOutput(data) {
     // PDF quality notice
     pdfWarning.style.display = data.pdf_quality_warning ? '' : 'none';
-    // Preview
-    previewPane.innerHTML = simpleMarkdownToHtml(data.markdown);
+    // Preview — cap at 5 000 chars to avoid catastrophic regex backtracking
+    // on large PDFs with many unmatched asterisks. Full content is in the
+    // Markdown tab for copy / download.
+    const PREVIEW_LIMIT = 5000;
+    const previewMd = data.markdown.length > PREVIEW_LIMIT
+      ? data.markdown.slice(0, PREVIEW_LIMIT) + '\n\n*[Preview truncated — full content available in the Markdown tab below]*'
+      : data.markdown;
+    previewPane.innerHTML = simpleMarkdownToHtml(previewMd);
     // Markdown
     markdownTA.value = data.markdown;
     // Download button
