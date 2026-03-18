@@ -1,0 +1,14 @@
+services:
+  docx-converter:
+    build: .
+    container_name: docx-converter
+    restart: unless-stopped
+    ports:
+      - "8740:8000"
+    volumes:
+      - /tmp/docx_converter:/tmp/docx_converter
+    environment:
+      - PYTHONUNBUFFERED=1
+    labels:
+      - "com.caschulz.service=docx-converter"
+      - "com.caschulz.description=NDID Exam Report DOCX to ADA Markdown Converter"

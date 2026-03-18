@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Examination Report Converter — NDID Accessibility Tool</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@400;600&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0d1117;
+      --surface:   #161b22;
+      --border:    #30363d;
+      --text:      #e6edf3;
+      --muted:     #8b949e;
+      --accent:    #58a6ff;
+      --accent-dim:#1f6feb;
+      --error:     #f85149;
+      --warn:      #d29922;
+      --info:      #58a6ff;
+      --pass:      #3fb950;
+      --radius:    6px;
+      --font-sans: 'IBM Plex Sans', sans-serif;
+      --font-mono: 'IBM Plex Mono', monospace;
+      --font-serif:'IBM Plex Serif', serif;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.6;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      border-bottom: 1px solid var(--border);
+      padding: 14px 24px;
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+    }
+    header h1 {
+      font-family: var(--font-serif);
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    header span {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ── Left panel ── */
+    .left-panel {
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+
+    .drop-zone {
+      margin: 20px;
+      border: 2px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 32px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .drop-zone:hover,
+    .drop-zone.drag-over {
+      border-color: var(--accent);
+      background: rgba(88,166,255,.06);
+    }
+    .drop-zone svg { color: var(--muted); margin-bottom: 8px; }
+    .drop-zone p { color: var(--muted); font-size: 13px; }
+    .drop-zone strong { color: var(--text); }
+    .drop-zone input[type=file] { display: none; }
+
+    #file-name {
+      margin: 0 20px 12px;
+      font-size: 12px;
+      color: var(--accent);
+      min-height: 16px;
+      word-break: break-all;
+    }
+
+    #convert-btn {
+      margin: 0 20px 20px;
+      width: calc(100% - 40px);
+      padding: 9px;
+      background: var(--accent-dim);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    #convert-btn:hover:not(:disabled) { background: var(--accent); }
+    #convert-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    #error-msg {
+      margin: 0 20px 12px;
+      padding: 10px 12px;
+      background: rgba(248,81,73,.12);
+      border: 1px solid var(--error);
+      border-radius: var(--radius);
+      color: var(--error);
+      font-size: 13px;
+      display: none;
+    }
+
+    /* Score card */
+    #score-card {
+      margin: 0 20px 16px;
+      padding: 14px 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      display: none;
+    }
+    .score-row {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    #score-value {
+      font-family: var(--font-mono);
+      font-size: 36px;
+      font-weight: 500;
+      line-height: 1;
+    }
+    .score-label { color: var(--muted); font-size: 12px; }
+
+    /* WCAG grid */
+    .wcag-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+    .wcag-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+    }
+    .wcag-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .wcag-dot.pass  { background: var(--pass); }
+    .wcag-dot.fail  { background: var(--error); }
+    .wcag-dot.warn  { background: var(--warn); }
+
+    /* Issues list */
+    #issues-section { padding: 0 20px 20px; }
+    #issues-section h2 {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+    .issue-item {
+      margin-bottom: 8px;
+      padding: 8px 10px;
+      border-radius: var(--radius);
+      border-left: 3px solid transparent;
+      font-size: 12px;
+      line-height: 1.5;
+      background: var(--surface);
+    }
+    .issue-item.error  { border-color: var(--error); }
+    .issue-item.warning { border-color: var(--warn); }
+    .issue-item.info   { border-color: var(--info); }
+    .issue-meta {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 2px;
+      font-size: 11px;
+    }
+    .badge {
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 10px;
+    }
+    .badge.error   { background: rgba(248,81,73,.2);  color: var(--error); }
+    .badge.warning { background: rgba(210,153,34,.2); color: var(--warn); }
+    .badge.info    { background: rgba(88,166,255,.2); color: var(--info); }
+    .wcag-tag { color: var(--muted); font-family: var(--font-mono); }
+    .line-tag { color: var(--muted); }
+
+    /* ── Right panel ── */
+    .right-panel {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .right-toolbar {
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 8px 16px;
+    }
+    .tab-btn {
+      padding: 4px 12px;
+      border: 1px solid transparent;
+      border-radius: var(--radius);
+      background: none;
+      color: var(--muted);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      cursor: pointer;
+      transition: color 0.1s, border-color 0.1s;
+    }
+    .tab-btn.active {
+      color: var(--text);
+      border-color: var(--border);
+      background: var(--surface);
+    }
+    .toolbar-spacer { flex: 1; }
+    #download-btn {
+      padding: 4px 12px;
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      cursor: pointer;
+      transition: border-color 0.15s;
+      display: none;
+    }
+    #download-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    .pane {
+      flex: 1;
+      overflow: auto;
+      display: none;
+    }
+    .pane.active { display: block; }
+
+    /* Preview pane */
+    #preview-pane {
+      padding: 28px 40px;
+      font-family: var(--font-serif);
+      font-size: 15px;
+      line-height: 1.7;
+      max-width: 760px;
+      margin: 0 auto;
+      width: 100%;
+    }
+    #preview-pane h1 { font-size: 26px; margin: 0 0 16px; }
+    #preview-pane h2 { font-size: 20px; margin: 24px 0 10px; }
+    #preview-pane h3 { font-size: 16px; margin: 20px 0 8px; }
+    #preview-pane h4, #preview-pane h5, #preview-pane h6 { font-size: 14px; margin: 16px 0 6px; }
+    #preview-pane p  { margin: 0 0 12px; }
+    #preview-pane ul, #preview-pane ol { margin: 0 0 12px 24px; }
+    #preview-pane li { margin-bottom: 4px; }
+    #preview-pane table { border-collapse: collapse; width: 100%; margin-bottom: 16px; font-family: var(--font-sans); font-size: 13px; }
+    #preview-pane th, #preview-pane td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+    #preview-pane th { background: var(--surface); font-weight: 600; }
+    #preview-pane code { font-family: var(--font-mono); font-size: 12px; background: var(--surface); padding: 1px 4px; border-radius: 3px; }
+    #preview-pane pre { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; overflow-x: auto; margin-bottom: 14px; }
+    #preview-pane pre code { background: none; padding: 0; }
+    #preview-pane blockquote { border-left: 3px solid var(--border); padding-left: 14px; color: var(--muted); margin-bottom: 12px; }
+    #preview-pane a { color: var(--accent); }
+    #preview-pane hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
+
+    /* Markdown pane */
+    #markdown-pane textarea {
+      width: 100%;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 1.6;
+      border: none;
+      outline: none;
+      resize: none;
+      padding: 20px 24px;
+    }
+
+    /* Placeholder state */
+    .placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+      padding: 40px;
+    }
+
+    /* Loading spinner */
+    .spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid rgba(255,255,255,.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    @media (max-width: 768px) {
+      .layout { grid-template-columns: 1fr; }
+      .right-panel { min-height: 60vh; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Examination Report Converter</h1>
+  <span>NDID Accessibility Tool — WCAG 2.1 AA</span>
+</header>
+
+<div class="layout">
+
+  <!-- ── Left panel ── -->
+  <aside class="left-panel">
+
+    <div class="drop-zone" id="drop-zone" role="button" tabindex="0"
+         aria-label="Upload a .docx file">
+      <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" fill="currentColor"
+           viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
+        <path d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/>
+      </svg>
+      <p><strong>Drop .docx here</strong><br />or click to select</p>
+      <input type="file" id="file-input" accept=".docx" aria-label="Select a .docx file" />
+    </div>
+
+    <div id="file-name" aria-live="polite"></div>
+    <div id="error-msg" role="alert"></div>
+
+    <button id="convert-btn" disabled>Convert to Accessible Markdown</button>
+
+    <!-- Score card (hidden until first conversion) -->
+    <div id="score-card" aria-live="polite">
+      <div class="score-row">
+        <span id="score-value">—</span>
+        <span class="score-label">/ 100 compliance score</span>
+      </div>
+      <div class="wcag-grid" id="wcag-grid"></div>
+    </div>
+
+    <!-- Issues list -->
+    <section id="issues-section" aria-label="Compliance issues" style="display:none">
+      <h2 id="issues-heading">Issues <span id="issues-count"></span></h2>
+      <div id="issues-list"></div>
+    </section>
+
+  </aside>
+
+  <!-- ── Right panel ── -->
+  <main class="right-panel">
+    <div class="right-toolbar">
+      <button class="tab-btn active" id="tab-preview" aria-pressed="true"
+              onclick="switchTab('preview')">Preview</button>
+      <button class="tab-btn" id="tab-markdown" aria-pressed="false"
+              onclick="switchTab('markdown')">Markdown</button>
+      <div class="toolbar-spacer"></div>
+      <button id="download-btn" onclick="downloadMarkdown()"
+              aria-label="Download Markdown file">Download .md</button>
+    </div>
+
+    <div id="preview-pane" class="pane active" role="region" aria-label="Rendered preview">
+      <div class="placeholder">Upload a .docx file to see the converted Markdown preview.</div>
+    </div>
+
+    <div id="markdown-pane" class="pane" role="region" aria-label="Raw Markdown source">
+      <textarea id="markdown-textarea" spellcheck="false" aria-label="Markdown source"
+                placeholder="Markdown source will appear here after conversion."></textarea>
+    </div>
+  </main>
+
+</div>
+
+<script>
+  'use strict';
+
+  // ── State ────────────────────────────────────────────────────────────────
+  let selectedFile = null;
+  let currentMarkdown = '';
+  let currentFilename = '';
+
+  // ── DOM refs ─────────────────────────────────────────────────────────────
+  const dropZone      = document.getElementById('drop-zone');
+  const fileInput     = document.getElementById('file-input');
+  const fileNameEl    = document.getElementById('file-name');
+  const convertBtn    = document.getElementById('convert-btn');
+  const errorMsg      = document.getElementById('error-msg');
+  const scoreCard     = document.getElementById('score-card');
+  const scoreValue    = document.getElementById('score-value');
+  const wcagGrid      = document.getElementById('wcag-grid');
+  const issuesSection = document.getElementById('issues-section');
+  const issuesList    = document.getElementById('issues-list');
+  const issuesCount   = document.getElementById('issues-count');
+  const previewPane   = document.getElementById('preview-pane');
+  const markdownPane  = document.getElementById('markdown-pane');
+  const markdownTA    = document.getElementById('markdown-textarea');
+  const downloadBtn   = document.getElementById('download-btn');
+
+  // ── File selection ────────────────────────────────────────────────────────
+  dropZone.addEventListener('click', () => fileInput.click());
+  dropZone.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') fileInput.click();
+  });
+  dropZone.addEventListener('dragover', e => {
+    e.preventDefault();
+    dropZone.classList.add('drag-over');
+  });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    const f = e.dataTransfer.files[0];
+    if (f) setFile(f);
+  });
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files[0]) setFile(fileInput.files[0]);
+  });
+
+  function setFile(f) {
+    if (!f.name.toLowerCase().endsWith('.docx')) {
+      showError('Only .docx files are supported.');
+      return;
+    }
+    selectedFile = f;
+    fileNameEl.textContent = f.name;
+    convertBtn.disabled = false;
+    hideError();
+  }
+
+  // ── Convert ───────────────────────────────────────────────────────────────
+  convertBtn.addEventListener('click', async () => {
+    if (!selectedFile) return;
+    convertBtn.disabled = true;
+    convertBtn.innerHTML = '<span class="spinner" aria-hidden="true"></span>Converting…';
+    hideError();
+
+    const form = new FormData();
+    form.append('file', selectedFile);
+
+    try {
+      const res = await fetch('/convert', { method: 'POST', body: form });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || 'Conversion failed.');
+      }
+      const data = await res.json();
+      currentMarkdown = data.markdown;
+      currentFilename = data.filename;
+      renderOutput(data);
+    } catch (e) {
+      showError(e.message);
+    } finally {
+      convertBtn.disabled = false;
+      convertBtn.textContent = 'Convert to Accessible Markdown';
+    }
+  });
+
+  // ── Render output ─────────────────────────────────────────────────────────
+  function renderOutput(data) {
+    // Preview
+    previewPane.innerHTML = simpleMarkdownToHtml(data.markdown);
+    // Markdown
+    markdownTA.value = data.markdown;
+    // Download button
+    downloadBtn.style.display = '';
+    // Score
+    const r = data.report;
+    scoreCard.style.display = '';
+    scoreValue.textContent = r.score;
+    scoreValue.style.color = scoreColor(r.score);
+    renderWcag(r.wcag_summary);
+    renderIssues(r.issues);
+  }
+
+  function scoreColor(s) {
+    if (s >= 80) return 'var(--pass)';
+    if (s >= 50) return 'var(--warn)';
+    return 'var(--error)';
+  }
+
+  function renderWcag(summary) {
+    wcagGrid.innerHTML = '';
+    for (const [crit, info] of Object.entries(summary)) {
+      const item = document.createElement('div');
+      item.className = 'wcag-item';
+      const dot = document.createElement('span');
+      dot.className = `wcag-dot ${info.status}`;
+      item.appendChild(dot);
+      const label = document.createElement('span');
+      label.textContent = `${crit} ${info.label}`;
+      item.appendChild(label);
+      wcagGrid.appendChild(item);
+    }
+  }
+
+  function renderIssues(issues) {
+    issuesList.innerHTML = '';
+    if (!issues.length) {
+      issuesSection.style.display = 'none';
+      return;
+    }
+    issuesSection.style.display = '';
+    issuesCount.textContent = `(${issues.length})`;
+    for (const issue of issues) {
+      const div = document.createElement('div');
+      div.className = `issue-item ${issue.severity}`;
+
+      const meta = document.createElement('div');
+      meta.className = 'issue-meta';
+
+      const badge = document.createElement('span');
+      badge.className = `badge ${issue.severity}`;
+      badge.textContent = issue.severity;
+      meta.appendChild(badge);
+
+      const wcagTag = document.createElement('span');
+      wcagTag.className = 'wcag-tag';
+      wcagTag.textContent = `WCAG ${issue.wcag}`;
+      meta.appendChild(wcagTag);
+
+      if (issue.line) {
+        const lineTag = document.createElement('span');
+        lineTag.className = 'line-tag';
+        lineTag.textContent = `Line ${issue.line}`;
+        meta.appendChild(lineTag);
+      }
+
+      div.appendChild(meta);
+
+      const msg = document.createElement('div');
+      msg.textContent = issue.message;
+      div.appendChild(msg);
+
+      issuesList.appendChild(div);
+    }
+  }
+
+  // ── Tabs ─────────────────────────────────────────────────────────────────
+  function switchTab(tab) {
+    const isPreview = tab === 'preview';
+    previewPane.classList.toggle('active', isPreview);
+    markdownPane.classList.toggle('active', !isPreview);
+    document.getElementById('tab-preview').classList.toggle('active', isPreview);
+    document.getElementById('tab-markdown').classList.toggle('active', !isPreview);
+    document.getElementById('tab-preview').setAttribute('aria-pressed', isPreview);
+    document.getElementById('tab-markdown').setAttribute('aria-pressed', !isPreview);
+  }
+
+  // ── Download ──────────────────────────────────────────────────────────────
+  function downloadMarkdown() {
+    if (!currentMarkdown) return;
+    const blob = new Blob([currentMarkdown], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = currentFilename || 'output.md';
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // ── Error helpers ─────────────────────────────────────────────────────────
+  function showError(msg) {
+    errorMsg.textContent = msg;
+    errorMsg.style.display = '';
+  }
+  function hideError() {
+    errorMsg.textContent = '';
+    errorMsg.style.display = 'none';
+  }
+
+  // ── Simple Markdown → HTML renderer ──────────────────────────────────────
+  // Handles: headings, bold/italic, inline code, fenced code blocks,
+  // blockquotes, horizontal rules, tables, unordered/ordered lists, links,
+  // images, and paragraph breaks. No external dependencies.
+  function simpleMarkdownToHtml(md) {
+    const lines = md.split('\n');
+    const out = [];
+    let i = 0;
+
+    function esc(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function inline(s) {
+      s = esc(s);
+      // Fenced inline code
+      s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+      // Bold + italic
+      s = s.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+      // Bold
+      s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      // Italic
+      s = s.replace(/\*(.+?)\*/g, '<em>$1</em>');
+      // Images
+      s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g,
+        (_, alt, src) => `<img src="${src}" alt="${alt}" />`);
+      // Links
+      s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g,
+        (_, text, href) => `<a href="${href}">${text}</a>`);
+      return s;
+    }
+
+    while (i < lines.length) {
+      const line = lines[i];
+
+      // Fenced code block
+      if (/^```/.test(line)) {
+        const lang = line.slice(3).trim();
+        const codeLines = [];
+        i++;
+        while (i < lines.length && !/^```/.test(lines[i])) {
+          codeLines.push(esc(lines[i]));
+          i++;
+        }
+        out.push(`<pre><code${lang ? ` class="language-${lang}"` : ''}>${codeLines.join('\n')}</code></pre>`);
+        i++;
+        continue;
+      }
+
+      // ATX headings
+      const hm = line.match(/^(#{1,6})\s+(.+)/);
+      if (hm) {
+        const lvl = hm[1].length;
+        out.push(`<h${lvl}>${inline(hm[2])}</h${lvl}>`);
+        i++; continue;
+      }
+
+      // Horizontal rule
+      if (/^(\*{3,}|-{3,}|_{3,})\s*$/.test(line)) {
+        out.push('<hr />');
+        i++; continue;
+      }
+
+      // Blockquote
+      if (/^>\s?/.test(line)) {
+        const bqLines = [];
+        while (i < lines.length && /^>\s?/.test(lines[i])) {
+          bqLines.push(lines[i].replace(/^>\s?/, ''));
+          i++;
+        }
+        out.push(`<blockquote>${simpleMarkdownToHtml(bqLines.join('\n'))}</blockquote>`);
+        continue;
+      }
+
+      // Unordered list
+      if (/^[-*+]\s/.test(line)) {
+        out.push('<ul>');
+        while (i < lines.length && /^[-*+]\s/.test(lines[i])) {
+          out.push(`<li>${inline(lines[i].replace(/^[-*+]\s+/, ''))}</li>`);
+          i++;
+        }
+        out.push('</ul>');
+        continue;
+      }
+
+      // Ordered list
+      if (/^\d+\.\s/.test(line)) {
+        out.push('<ol>');
+        while (i < lines.length && /^\d+\.\s/.test(lines[i])) {
+          out.push(`<li>${inline(lines[i].replace(/^\d+\.\s+/, ''))}</li>`);
+          i++;
+        }
+        out.push('</ol>');
+        continue;
+      }
+
+      // Table: look for pipe-separated rows
+      if (/^\|/.test(line)) {
+        const tableLines = [];
+        while (i < lines.length && /^\|/.test(lines[i])) {
+          tableLines.push(lines[i]);
+          i++;
+        }
+        out.push(renderTable(tableLines));
+        continue;
+      }
+
+      // Blank line → paragraph break
+      if (line.trim() === '') {
+        i++; continue;
+      }
+
+      // Paragraph: collect non-blank, non-special lines
+      const paraLines = [];
+      while (i < lines.length && lines[i].trim() !== '' &&
+             !/^(#{1,6}|>|[-*+]|\d+\.|`{3}|\|)/.test(lines[i]) &&
+             !/^(\*{3,}|-{3,}|_{3,})\s*$/.test(lines[i])) {
+        paraLines.push(lines[i]);
+        i++;
+      }
+      if (paraLines.length) {
+        out.push(`<p>${inline(paraLines.join(' '))}</p>`);
+      }
+    }
+
+    return out.join('\n');
+  }
+
+  function renderTable(lines) {
+    const rows = lines.map(l =>
+      l.split('|').map(c => c.trim()).filter((_, idx, arr) => idx > 0 && idx < arr.length - 1)
+    );
+    if (rows.length < 2) return `<p>${lines.join('<br/>')}</p>`;
+
+    const isSep = row => row.every(c => /^:?-+:?$/.test(c));
+    let html = '<table>';
+    let inBody = false;
+
+    for (let r = 0; r < rows.length; r++) {
+      if (isSep(rows[r])) { inBody = true; continue; }
+      const tag = (!inBody && r === 0) ? 'th' : 'td';
+      html += '<tr>' + rows[r].map(c => `<${tag}>${c}</${tag}>`).join('') + '</tr>';
+    }
+    html += '</table>';
+    return html;
+  }
+</script>
+
+</body>
+</html>
