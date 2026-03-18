@@ -1,0 +1,29 @@
+# Personal / deployment-specific nginx configs (keep example.conf)
+nginx/*.conf
+!nginx/example.conf
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+*.secret
+
+# macOS
+.DS_Store
