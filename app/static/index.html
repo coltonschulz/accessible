@@ -119,6 +119,38 @@
       display: none;
     }
 
+    /* Progress block */
+    #progress-block {
+      margin: 0 20px 16px;
+      display: none;
+    }
+    #progress-status {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 6px;
+      display: flex;
+      justify-content: space-between;
+    }
+    #progress-status span { color: var(--accent); font-family: var(--font-mono); }
+    #progress-track {
+      height: 3px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    #progress-bar {
+      height: 100%;
+      width: 30%;
+      background: var(--accent);
+      border-radius: 2px;
+      animation: progress-slide 1.6s ease-in-out infinite;
+    }
+    @keyframes progress-slide {
+      0%   { margin-left: -30%; }
+      50%  { margin-left: 100%; }
+      100% { margin-left: -30%; }
+    }
+
     /* Conformance tier badge */
     .tier-badge {
       display: inline-block;
@@ -444,6 +476,15 @@
 
     <div id="file-name" aria-live="polite"></div>
     <div id="error-msg" role="alert"></div>
+
+    <div id="progress-block" role="status" aria-live="polite">
+      <div id="progress-status">
+        <span id="progress-label">Uploading…</span>
+        <span id="progress-timer">0s</span>
+      </div>
+      <div id="progress-track"><div id="progress-bar"></div></div>
+    </div>
+
     <div id="pdf-warning" role="note">
       <strong>PDF output — lower fidelity</strong>
       PDFs don't embed heading levels or table structure. Heading hierarchy
@@ -516,8 +557,11 @@
   const fileInput     = document.getElementById('file-input');
   const fileNameEl    = document.getElementById('file-name');
   const convertBtn    = document.getElementById('convert-btn');
-  const errorMsg      = document.getElementById('error-msg');
-  const pdfWarning    = document.getElementById('pdf-warning');
+  const errorMsg       = document.getElementById('error-msg');
+  const pdfWarning     = document.getElementById('pdf-warning');
+  const progressBlock  = document.getElementById('progress-block');
+  const progressLabel  = document.getElementById('progress-label');
+  const progressTimer  = document.getElementById('progress-timer');
   const scoreCard       = document.getElementById('score-card');
   const scoreValue      = document.getElementById('score-value');
   const tierBadge       = document.getElementById('tier-badge');
@@ -570,8 +614,9 @@
   convertBtn.addEventListener('click', async () => {
     if (!selectedFile) return;
     convertBtn.disabled = true;
-    convertBtn.innerHTML = '<span class="spinner" aria-hidden="true"></span>Converting…';
+    convertBtn.innerHTML = '<span class="spinner" aria-hidden="true"></span>Working…';
     hideError();
+    startProgress();
 
     const form = new FormData();
     form.append('file', selectedFile);
@@ -589,6 +634,7 @@
     } catch (e) {
       showError(e.message);
     } finally {
+      stopProgress();
       convertBtn.disabled = false;
       convertBtn.textContent = 'Run Accessibility Audit';
     }
@@ -789,6 +835,46 @@
     a.download = currentFilename || 'output.md';
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  // ── Progress ──────────────────────────────────────────────────────────────
+  let _progressTimer = null;
+  let _progressStage = null;
+
+  const _stages = [
+    [0,  'Uploading document…'],
+    [3,  'Converting to Markdown…'],
+    [8,  'Running compliance checks…'],
+    [14, 'Checking heading structure…'],
+    [20, 'Analysing readability…'],
+    [30, 'Still working — large documents can take up to 60 seconds…'],
+    [50, 'Almost there…'],
+  ];
+
+  function startProgress() {
+    progressBlock.style.display = '';
+    progressLabel.textContent = _stages[0][1];
+    progressTimer.textContent = '0s';
+    let elapsed = 0;
+    let stageIdx = 0;
+
+    _progressTimer = setInterval(() => {
+      elapsed++;
+      progressTimer.textContent = `${elapsed}s`;
+      // Advance label when elapsed hits the next stage threshold
+      if (stageIdx + 1 < _stages.length && elapsed >= _stages[stageIdx + 1][0]) {
+        stageIdx++;
+        progressLabel.textContent = _stages[stageIdx][1];
+      }
+    }, 1000);
+  }
+
+  function stopProgress() {
+    clearInterval(_progressTimer);
+    _progressTimer = null;
+    progressBlock.style.display = 'none';
+    progressLabel.textContent = _stages[0][1];
+    progressTimer.textContent = '0s';
   }
 
   // ── Error helpers ─────────────────────────────────────────────────────────
