@@ -1,14 +1,14 @@
 services:
-  docx-converter:
+  accessible:
     build: .
-    container_name: docx-converter
+    container_name: accessible
     restart: unless-stopped
     ports:
       - "8740:8000"
     volumes:
-      - /tmp/docx_converter:/tmp/docx_converter
+      - /tmp/accessible:/tmp/accessible
     environment:
       - PYTHONUNBUFFERED=1
     labels:
-      - "com.caschulz.service=docx-converter"
-      - "com.caschulz.description=NDID Exam Report DOCX to ADA Markdown Converter"
+      - "com.caschulz.service=accessible"
+      - "com.caschulz.description=Accessible — NDID ADA/WCAG 2.1 AA Compliance Tool"

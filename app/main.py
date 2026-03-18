@@ -1,7 +1,7 @@
-"""NDID Examination Report → Accessible Markdown Converter.
+"""Accessible — NDID ADA/WCAG 2.1 AA Compliance Tool.
 
 FastAPI backend. Accepts .docx and .pdf uploads, converts to Markdown via
-MarkItDown, and runs a WCAG 2.1 AA compliance audit on the output.
+MarkItDown, and runs a full WCAG 2.1 AA compliance audit on the output.
 """
 
 import os
@@ -14,10 +14,10 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, Response
 from markitdown import MarkItDown
 
-app = FastAPI(title="NDID Exam Report Converter")
+app = FastAPI(title="Accessible — NDID ADA Compliance Tool")
 
 _STATIC_DIR = Path(__file__).parent / "static"
-_TMP_DIR = Path("/tmp/docx_converter")
+_TMP_DIR = Path("/tmp/accessible")
 _TMP_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
