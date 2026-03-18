@@ -7,6 +7,7 @@ MarkItDown, and runs a full WCAG 2.1 AA compliance audit on the output.
 import asyncio
 import os
 import re
+import threading
 import uuid
 import zipfile
 from pathlib import Path
@@ -23,6 +24,7 @@ _TMP_DIR = Path("/tmp/accessible")
 _TMP_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+MAX_CONVERSION_SECONDS = 180      # kill job if MarkItDown stalls
 _ACCEPTED_EXTENSIONS = {".docx", ".pdf"}
 
 # In-memory job store — keyed by UUID, safe for single-worker uvicorn
@@ -41,7 +43,9 @@ _uploads: dict[str, dict[str, Any]] = {}
 def _run_job(job_id: str, tmp_path: Path, is_pdf: bool, stem: str) -> None:
     """Background task: convert file and store result in _jobs.
 
-    Runs in a thread pool (Starlette runs sync background tasks via run_in_threadpool).
+    Runs in a thread pool executor (non-blocking to the async event loop).
+    A threading.Timer fires after MAX_CONVERSION_SECONDS to mark the job
+    as failed if MarkItDown stalls — e.g. on a malformed or image-only PDF.
 
     Args:
         job_id: UUID key in ``_jobs``.
@@ -49,20 +53,38 @@ def _run_job(job_id: str, tmp_path: Path, is_pdf: bool, stem: str) -> None:
         is_pdf: True when the source file is a PDF.
         stem: Original filename stem used to name the output .md file.
     """
+    def _on_timeout() -> None:
+        # Only overwrite if still pending — don't clobber a completed job.
+        if _jobs.get(job_id, {}).get("status") == "pending":
+            _jobs[job_id] = {
+                "status": "error",
+                "detail": (
+                    "Conversion timed out after 3 minutes. "
+                    "The document may be a scanned/image-only PDF that cannot be "
+                    "processed automatically. Try a text-based PDF or .docx instead."
+                ),
+            }
+
+    timer = threading.Timer(MAX_CONVERSION_SECONDS, _on_timeout)
+    timer.daemon = True
+    timer.start()
     try:
         md_text, report = _process_document(tmp_path, is_pdf)
-        _jobs[job_id] = {
-            "status": "complete",
-            "filename": f"{stem}.md",
-            "markdown": md_text,
-            "report": report,
-            "pdf_quality_warning": is_pdf,
-        }
+        # Guard against the rare race where the timer fired just before we finished.
+        if _jobs.get(job_id, {}).get("status") == "pending":
+            _jobs[job_id] = {
+                "status": "complete",
+                "filename": f"{stem}.md",
+                "markdown": md_text,
+                "report": report,
+                "pdf_quality_warning": is_pdf,
+            }
     except HTTPException as exc:
         _jobs[job_id] = {"status": "error", "detail": exc.detail}
     except Exception as exc:
         _jobs[job_id] = {"status": "error", "detail": str(exc)}
     finally:
+        timer.cancel()
         tmp_path.unlink(missing_ok=True)
 
 
