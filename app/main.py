@@ -82,7 +82,10 @@ def _process_document(tmp_path: Path, is_pdf: bool) -> tuple[str, dict[str, Any]
 async def index() -> HTMLResponse:
     """Serve the single-page UI."""
     html = (_STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    return HTMLResponse(content=html)
+    return HTMLResponse(
+        content=html,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/robots.txt", response_class=Response)
@@ -96,8 +99,8 @@ async def robots() -> Response:
 
 @app.post("/convert")
 async def convert(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
 ) -> dict[str, str]:
     """Accept an upload, enqueue a background conversion job, and return immediately.
 
