@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, Response
 from markitdown import MarkItDown
 
@@ -27,6 +28,23 @@ _ACCEPTED_EXTENSIONS = {".docx", ".pdf"}
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
+
+def _process_document(tmp_path: Path, is_pdf: bool) -> tuple[str, dict[str, Any]]:
+    """Run conversion and compliance audit synchronously (called via thread pool).
+
+    Args:
+        tmp_path: Path to the uploaded file in /tmp.
+        is_pdf: True when the source file is a PDF.
+
+    Returns:
+        Tuple of (markdown_text, compliance_report).
+    """
+    md_text = _convert_file(tmp_path)
+    md_text = post_process_markdown(md_text)
+    embedded_images = [] if is_pdf else extract_docx_images(tmp_path)
+    report = build_compliance_report(md_text, embedded_images)
+    return md_text, report
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -70,11 +88,11 @@ async def convert(file: UploadFile = File(...)) -> dict[str, Any]:
     tmp_path = _TMP_DIR / f"{os.urandom(8).hex()}_{file.filename}"
     try:
         tmp_path.write_bytes(contents)
-        md_text = _convert_file(tmp_path)
-        md_text = post_process_markdown(md_text)
-        # Image extraction only works for DOCX (zip-based); skip for PDF
-        embedded_images = [] if is_pdf else extract_docx_images(tmp_path)
-        report = build_compliance_report(md_text, embedded_images)
+        # Run blocking conversion + compliance audit in a thread pool so the
+        # event loop stays free during what can be a multi-second operation.
+        md_text, report = await run_in_threadpool(
+            _process_document, tmp_path, is_pdf
+        )
     finally:
         tmp_path.unlink(missing_ok=True)
 
