@@ -4,6 +4,7 @@ FastAPI backend. Accepts .docx and .pdf uploads, converts to Markdown via
 MarkItDown, and runs a full WCAG 2.1 AA compliance audit on the output.
 """
 
+import asyncio
 import os
 import re
 import uuid
@@ -11,7 +12,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, Response
 from markitdown import MarkItDown
 
@@ -99,7 +100,6 @@ async def robots() -> Response:
 
 @app.post("/convert")
 async def convert(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
 ) -> dict[str, str]:
     """Accept an upload, enqueue a background conversion job, and return immediately.
@@ -134,8 +134,11 @@ async def convert(
     tmp_path.write_bytes(contents)
 
     _jobs[job_id] = {"status": "pending"}
-    # Sync background tasks run in a thread pool by Starlette — non-blocking.
-    background_tasks.add_task(_run_job, job_id, tmp_path, is_pdf, stem)
+    # Fire and forget — run_in_executor submits to the default thread pool
+    # and returns immediately without blocking the event loop.
+    asyncio.get_running_loop().run_in_executor(
+        None, _run_job, job_id, tmp_path, is_pdf, stem
+    )
 
     return {"job_id": job_id}
 

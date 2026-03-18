@@ -635,7 +635,8 @@
       currentFilename = data.filename;
       renderOutput(data);
     } catch (e) {
-      showError(e.message);
+      console.error('Conversion error:', e);
+      showError(e.message || 'An unexpected error occurred — check browser console.');
     } finally {
       stopProgress();
       convertBtn.disabled = false;
