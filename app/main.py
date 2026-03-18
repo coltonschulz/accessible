@@ -28,6 +28,10 @@ _ACCEPTED_EXTENSIONS = {".docx", ".pdf"}
 # In-memory job store — keyed by UUID, safe for single-worker uvicorn
 _jobs: dict[str, dict[str, Any]] = {}
 
+# In-memory upload store — keyed by UUID, populated by POST /upload,
+# consumed (and removed) by POST /convert.
+_uploads: dict[str, dict[str, Any]] = {}
+
 
 # ---------------------------------------------------------------------------
 # Routes
@@ -98,20 +102,23 @@ async def robots() -> Response:
     )
 
 
-@app.post("/convert")
-async def convert(
-    file: UploadFile = File(...),
-) -> dict[str, str]:
-    """Accept an upload, enqueue a background conversion job, and return immediately.
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Receive and stage a file for later conversion.
+
+    Stores the file in ``/tmp/accessible`` and records metadata in
+    ``_uploads`` keyed by a UUID.  The file is consumed (and the key
+    removed) when ``POST /convert`` is called with the returned ``file_id``.
 
     Args:
         file: The uploaded .docx or .pdf file.
 
     Returns:
-        A dict with key ``job_id`` — poll ``GET /convert/status/{job_id}`` for result.
+        A dict with ``file_id``, ``filename``, and ``size`` (bytes).
 
     Raises:
-        HTTPException: 400 if the file type is unsupported or exceeds size limit.
+        HTTPException: 400 if the file type is unsupported or exceeds the
+            size limit.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided.")
@@ -127,17 +134,50 @@ async def convert(
     if len(contents) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="File exceeds 50 MB limit.")
 
-    is_pdf = ext == ".pdf"
-    stem = Path(file.filename).stem
-    job_id = str(uuid.uuid4())
-    tmp_path = _TMP_DIR / f"{job_id}_{file.filename}"
+    file_id = str(uuid.uuid4())
+    tmp_path = _TMP_DIR / f"{file_id}_{file.filename}"
     tmp_path.write_bytes(contents)
 
+    _uploads[file_id] = {
+        "path": tmp_path,
+        "filename": file.filename,
+        "is_pdf": ext == ".pdf",
+        "stem": Path(file.filename).stem,
+        "size": len(contents),
+    }
+    return {"file_id": file_id, "filename": file.filename, "size": len(contents)}
+
+
+@app.post("/convert")
+async def convert(file_id: str = Form(...)) -> dict[str, str]:
+    """Enqueue a conversion job for a previously uploaded file.
+
+    Looks up ``file_id`` in ``_uploads``, removes it (one-shot), and
+    fires a background conversion task.  Returns immediately with a
+    ``job_id`` to poll via ``GET /convert/status/{job_id}``.
+
+    Args:
+        file_id: UUID returned by ``POST /upload``.
+
+    Returns:
+        A dict with key ``job_id``.
+
+    Raises:
+        HTTPException: 404 if the ``file_id`` is unknown or already used.
+    """
+    upload = _uploads.pop(file_id, None)
+    if upload is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Upload not found or already converted. Please re-upload.",
+        )
+
+    job_id = str(uuid.uuid4())
     _jobs[job_id] = {"status": "pending"}
     # Fire and forget — run_in_executor submits to the default thread pool
     # and returns immediately without blocking the event loop.
     asyncio.get_running_loop().run_in_executor(
-        None, _run_job, job_id, tmp_path, is_pdf, stem
+        None, _run_job, job_id, upload["path"], upload["is_pdf"], upload["stem"]
     )
 
     return {"job_id": job_id}

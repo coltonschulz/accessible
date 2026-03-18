@@ -108,6 +108,37 @@
     #convert-btn:hover:not(:disabled) { background: var(--accent); }
     #convert-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
+    #upload-btn {
+      margin: 0 20px 12px;
+      width: calc(100% - 40px);
+      padding: 9px;
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    #upload-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+    #upload-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    #upload-status {
+      margin: 0 20px 10px;
+      font-size: 12px;
+      color: var(--pass);
+      display: none;
+    }
+
+    /* Real-percentage mode: disable the sliding animation */
+    #progress-bar.real {
+      animation: none;
+      width: 0%;
+      transition: width 0.2s ease;
+    }
+
     #error-msg {
       margin: 0 20px 12px;
       padding: 10px 12px;
@@ -477,6 +508,9 @@
     <div id="file-name" aria-live="polite"></div>
     <div id="error-msg" role="alert"></div>
 
+    <button id="upload-btn" disabled>Upload Document</button>
+    <div id="upload-status" aria-live="polite"></div>
+
     <div id="progress-block" role="status" aria-live="polite">
       <div id="progress-status">
         <span id="progress-label">Uploading…</span>
@@ -492,7 +526,7 @@
       source document. Re-convert from .docx for best results.
     </div>
 
-    <button id="convert-btn" disabled>Run Accessibility Audit</button>
+    <button id="convert-btn" disabled style="display:none">Run Accessibility Audit</button>
 
     <!-- Score card (hidden until first conversion) -->
     <div id="score-card" aria-live="polite">
@@ -549,6 +583,7 @@
 
   // ── State ────────────────────────────────────────────────────────────────
   let selectedFile = null;
+  let fileId = null;          // set after successful POST /upload
   let currentMarkdown = '';
   let currentFilename = '';
 
@@ -556,6 +591,8 @@
   const dropZone      = document.getElementById('drop-zone');
   const fileInput     = document.getElementById('file-input');
   const fileNameEl    = document.getElementById('file-name');
+  const uploadBtn     = document.getElementById('upload-btn');
+  const uploadStatus  = document.getElementById('upload-status');
   const convertBtn    = document.getElementById('convert-btn');
   const errorMsg       = document.getElementById('error-msg');
   const pdfWarning     = document.getElementById('pdf-warning');
@@ -605,45 +642,101 @@
       return;
     }
     selectedFile = f;
+    fileId = null;
     fileNameEl.textContent = f.name;
-    convertBtn.disabled = false;
+    // Reset upload/convert state for the new file
+    uploadStatus.style.display = 'none';
+    uploadBtn.style.display = '';
+    uploadBtn.disabled = false;
+    uploadBtn.textContent = 'Upload Document';
+    convertBtn.style.display = 'none';
+    convertBtn.disabled = true;
     hideError();
   }
 
+  // ── Upload ────────────────────────────────────────────────────────────────
+  uploadBtn.addEventListener('click', () => {
+    if (!selectedFile) return;
+    uploadBtn.disabled = true;
+    uploadBtn.innerHTML = '<span class="spinner" aria-hidden="true"></span>Uploading…';
+    hideError();
+
+    // Show real-percentage progress bar (XHR exposes upload progress; fetch does not)
+    progressBlock.style.display = '';
+    progressBar.classList.add('real');
+    progressBar.style.width = '0%';
+    progressLabel.textContent = 'Uploading… 0%';
+    progressTimer.textContent = '';
+
+    const form = new FormData();
+    form.append('file', selectedFile);
+
+    const xhr = new XMLHttpRequest();
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        const pct = Math.round(e.loaded / e.total * 100);
+        progressBar.style.width = `${pct}%`;
+        progressLabel.textContent = `Uploading… ${pct}%`;
+      }
+    };
+
+    xhr.onload = () => {
+      progressBlock.style.display = 'none';
+      progressBar.classList.remove('real');
+      if (xhr.status >= 200 && xhr.status < 300) {
+        const res = JSON.parse(xhr.responseText);
+        fileId = res.file_id;
+        const kb = Math.round(res.size / 1024);
+        uploadStatus.textContent = `✓ ${res.filename} (${kb} KB) — ready to audit`;
+        uploadStatus.style.display = '';
+        uploadBtn.style.display = 'none';
+        convertBtn.style.display = '';
+        convertBtn.disabled = false;
+      } else {
+        let detail = 'Upload failed.';
+        try { detail = JSON.parse(xhr.responseText).detail || detail; } catch (_) {}
+        showError(detail);
+        uploadBtn.disabled = false;
+        uploadBtn.textContent = 'Upload Document';
+      }
+    };
+
+    xhr.onerror = () => {
+      progressBlock.style.display = 'none';
+      progressBar.classList.remove('real');
+      showError('Upload failed — network error. Check your connection and try again.');
+      uploadBtn.disabled = false;
+      uploadBtn.textContent = 'Upload Document';
+    };
+
+    xhr.open('POST', '/upload');
+    xhr.send(form);
+  });
+
   // ── Convert ───────────────────────────────────────────────────────────────
   convertBtn.addEventListener('click', async () => {
-    if (!selectedFile) return;
+    if (!fileId) return;
     convertBtn.disabled = true;
-    convertBtn.innerHTML = '<span class="spinner" aria-hidden="true"></span>Working…';
+    convertBtn.innerHTML = '<span class="spinner" aria-hidden="true"></span>Analysing…';
     hideError();
     startProgress();
 
     try {
-      // POST returns immediately with a job_id — no long-hanging connection
       const form = new FormData();
-      form.append('file', selectedFile);
-      console.log('[1] Uploading file...');
-      const uploadRes = await fetch('/convert', { method: 'POST', body: form });
-      console.log('[2] Upload response status:', uploadRes.status);
-      if (!uploadRes.ok) {
-        const err = await uploadRes.json().catch(() => ({ detail: uploadRes.statusText }));
-        throw new Error(err.detail || 'Upload failed.');
+      form.append('file_id', fileId);
+      const res = await fetch('/convert', { method: 'POST', body: form });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || 'Could not start conversion.');
       }
-      const uploadJson = await uploadRes.json();
-      console.log('[3] Upload response body:', uploadJson);
-      const { job_id } = uploadJson;
-
-      // Poll until complete
-      console.log('[4] Polling job:', job_id);
+      const { job_id } = await res.json();
       const data = await pollJob(job_id);
-      console.log('[5] Job complete, rendering...');
       currentMarkdown = data.markdown;
       currentFilename = data.filename;
       renderOutput(data);
-      console.log('[6] Render complete.');
     } catch (e) {
-      console.error('Conversion error:', e);
-      showError(e.message || 'An unexpected error occurred — check browser console.');
+      showError(e.message || 'An unexpected error occurred.');
     } finally {
       stopProgress();
       convertBtn.disabled = false;
@@ -652,15 +745,11 @@
   });
 
   async function pollJob(jobId) {
-    let pollCount = 0;
     while (true) {
       await new Promise(r => setTimeout(r, 1500));
-      pollCount++;
       const res = await fetch(`/convert/status/${jobId}`);
-      console.log(`[poll ${pollCount}] status HTTP ${res.status}`);
       if (!res.ok) throw new Error('Lost track of conversion job — please try again.');
       const job = await res.json();
-      console.log(`[poll ${pollCount}] job.status =`, job.status);
       if (job.status === 'complete') return job;
       if (job.status === 'error') throw new Error(job.detail || 'Conversion failed.');
       // status === 'pending' → keep polling
@@ -869,13 +958,12 @@
   let _progressStage = null;
 
   const _stages = [
-    [0,  'Uploading document…'],
-    [3,  'Converting to Markdown…'],
-    [8,  'Running compliance checks…'],
-    [14, 'Checking heading structure…'],
-    [20, 'Analysing readability…'],
-    [30, 'Still working — large documents can take up to 60 seconds…'],
-    [50, 'Almost there…'],
+    [0,  'Converting to Markdown…'],
+    [5,  'Running compliance checks…'],
+    [12, 'Checking heading structure…'],
+    [18, 'Analysing readability…'],
+    [28, 'Still working — large documents can take up to 60 seconds…'],
+    [48, 'Almost there…'],
   ];
 
   function startProgress() {
