@@ -618,16 +618,19 @@
     hideError();
     startProgress();
 
-    const form = new FormData();
-    form.append('file', selectedFile);
-
     try {
-      const res = await fetch('/convert', { method: 'POST', body: form });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: res.statusText }));
-        throw new Error(err.detail || 'Conversion failed.');
+      // POST returns immediately with a job_id — no long-hanging connection
+      const form = new FormData();
+      form.append('file', selectedFile);
+      const uploadRes = await fetch('/convert', { method: 'POST', body: form });
+      if (!uploadRes.ok) {
+        const err = await uploadRes.json().catch(() => ({ detail: uploadRes.statusText }));
+        throw new Error(err.detail || 'Upload failed.');
       }
-      const data = await res.json();
+      const { job_id } = await uploadRes.json();
+
+      // Poll until complete
+      const data = await pollJob(job_id);
       currentMarkdown = data.markdown;
       currentFilename = data.filename;
       renderOutput(data);
@@ -639,6 +642,18 @@
       convertBtn.textContent = 'Run Accessibility Audit';
     }
   });
+
+  async function pollJob(jobId) {
+    while (true) {
+      await new Promise(r => setTimeout(r, 1500));
+      const res = await fetch(`/convert/status/${jobId}`);
+      if (!res.ok) throw new Error('Lost track of conversion job — please try again.');
+      const job = await res.json();
+      if (job.status === 'complete') return job;
+      if (job.status === 'error') throw new Error(job.detail || 'Conversion failed.');
+      // status === 'pending' → keep polling
+    }
+  }
 
   // ── Render output ─────────────────────────────────────────────────────────
   function renderOutput(data) {

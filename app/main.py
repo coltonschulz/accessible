@@ -6,12 +6,12 @@ MarkItDown, and runs a full WCAG 2.1 AA compliance audit on the output.
 
 import os
 import re
+import uuid
 import zipfile
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.concurrency import run_in_threadpool
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, Response
 from markitdown import MarkItDown
 
@@ -24,10 +24,41 @@ _TMP_DIR.mkdir(parents=True, exist_ok=True)
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 _ACCEPTED_EXTENSIONS = {".docx", ".pdf"}
 
+# In-memory job store — keyed by UUID, safe for single-worker uvicorn
+_jobs: dict[str, dict[str, Any]] = {}
+
 
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
+
+def _run_job(job_id: str, tmp_path: Path, is_pdf: bool, stem: str) -> None:
+    """Background task: convert file and store result in _jobs.
+
+    Runs in a thread pool (Starlette runs sync background tasks via run_in_threadpool).
+
+    Args:
+        job_id: UUID key in ``_jobs``.
+        tmp_path: Path to the uploaded file; deleted after processing.
+        is_pdf: True when the source file is a PDF.
+        stem: Original filename stem used to name the output .md file.
+    """
+    try:
+        md_text, report = _process_document(tmp_path, is_pdf)
+        _jobs[job_id] = {
+            "status": "complete",
+            "filename": f"{stem}.md",
+            "markdown": md_text,
+            "report": report,
+            "pdf_quality_warning": is_pdf,
+        }
+    except HTTPException as exc:
+        _jobs[job_id] = {"status": "error", "detail": exc.detail}
+    except Exception as exc:
+        _jobs[job_id] = {"status": "error", "detail": str(exc)}
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def _process_document(tmp_path: Path, is_pdf: bool) -> tuple[str, dict[str, Any]]:
@@ -55,19 +86,20 @@ async def index() -> HTMLResponse:
 
 
 @app.post("/convert")
-async def convert(file: UploadFile = File(...)) -> dict[str, Any]:
-    """Convert an uploaded .docx or .pdf file to Markdown and run compliance audit.
+async def convert(
+    file: UploadFile = File(...),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+) -> dict[str, str]:
+    """Accept an upload, enqueue a background conversion job, and return immediately.
 
     Args:
         file: The uploaded .docx or .pdf file.
 
     Returns:
-        A dict with keys ``filename``, ``markdown``, ``report``, and
-        ``pdf_quality_warning`` (bool, True when input was a PDF).
+        A dict with key ``job_id`` — poll ``GET /convert/status/{job_id}`` for result.
 
     Raises:
         HTTPException: 400 if the file type is unsupported or exceeds size limit.
-        HTTPException: 422 if MarkItDown fails to parse the file.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided.")
@@ -84,25 +116,40 @@ async def convert(file: UploadFile = File(...)) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="File exceeds 50 MB limit.")
 
     is_pdf = ext == ".pdf"
-
-    tmp_path = _TMP_DIR / f"{os.urandom(8).hex()}_{file.filename}"
-    try:
-        tmp_path.write_bytes(contents)
-        # Run blocking conversion + compliance audit in a thread pool so the
-        # event loop stays free during what can be a multi-second operation.
-        md_text, report = await run_in_threadpool(
-            _process_document, tmp_path, is_pdf
-        )
-    finally:
-        tmp_path.unlink(missing_ok=True)
-
     stem = Path(file.filename).stem
-    return {
-        "filename": f"{stem}.md",
-        "markdown": md_text,
-        "report": report,
-        "pdf_quality_warning": is_pdf,
-    }
+    job_id = str(uuid.uuid4())
+    tmp_path = _TMP_DIR / f"{job_id}_{file.filename}"
+    tmp_path.write_bytes(contents)
+
+    _jobs[job_id] = {"status": "pending"}
+    # Sync background tasks run in a thread pool by Starlette — non-blocking.
+    background_tasks.add_task(_run_job, job_id, tmp_path, is_pdf, stem)
+
+    return {"job_id": job_id}
+
+
+@app.get("/convert/status/{job_id}")
+async def convert_status(job_id: str) -> dict[str, Any]:
+    """Poll conversion job status.
+
+    Args:
+        job_id: UUID returned by ``POST /convert``.
+
+    Returns:
+        ``{"status": "pending"}`` while running, or the full result dict
+        (``status``, ``filename``, ``markdown``, ``report``, ``pdf_quality_warning``)
+        on completion, or ``{"status": "error", "detail": "..."}`` on failure.
+
+    Raises:
+        HTTPException: 404 if the job ID is unknown or already expired.
+    """
+    job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found or already retrieved.")
+    # Remove from store once a terminal state is delivered
+    if job["status"] in ("complete", "error"):
+        _jobs.pop(job_id, None)
+    return job
 
 
 @app.post("/download-markdown")
