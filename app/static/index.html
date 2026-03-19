@@ -765,25 +765,40 @@
   // ── Render output ─────────────────────────────────────────────────────────
   async function renderOutput(data) {
     const yield_ = () => new Promise(r => setTimeout(r, 0));
+    const dbg = (msg) => {
+      console.log('[renderOutput]', msg);
+      previewPane.innerHTML = `<pre style="padding:1rem;white-space:pre-wrap">[debug] ${msg}</pre>`;
+    };
+
+    dbg(`data received — markdown ${data.markdown.length} chars, ` +
+        `${data.report?.issues?.length ?? '?'} issues`);
+    await yield_();
 
     // PDF quality notice
     pdfWarning.style.display = data.pdf_quality_warning ? '' : 'none';
 
-    // Preview — cap at 5 000 chars to avoid regex backtracking on large PDFs.
-    // Full content stays in currentMarkdown for copy / download.
+    dbg('slicing preview markdown…');
+    await yield_();
+
     const PREVIEW_LIMIT = 5000;
     const previewMd = data.markdown.length > PREVIEW_LIMIT
-      ? data.markdown.slice(0, PREVIEW_LIMIT) + '\n\n*[Preview truncated — full content available in the Markdown tab below]*'
+      ? data.markdown.slice(0, PREVIEW_LIMIT) + '\n\n*(preview truncated)*'
       : data.markdown;
-    // Yield before the markdown render so the browser can paint the
-    // progress-stopped state first, keeping the UI responsive.
-    await yield_();
-    previewPane.innerHTML = simpleMarkdownToHtml(previewMd);
-    markdownTA.value = '';   // populated lazily on tab open via currentMarkdown
 
+    dbg('running simpleMarkdownToHtml…');
     await yield_();
 
-    // Download button + score card
+    const previewHtml = simpleMarkdownToHtml(previewMd);
+
+    dbg('assigning innerHTML…');
+    await yield_();
+
+    previewPane.innerHTML = previewHtml;
+    markdownTA.value = '';
+
+    dbg('rendering score card…');
+    await yield_();
+
     downloadBtn.style.display = '';
     const r = data.report;
     scoreCard.style.display = '';
@@ -794,9 +809,14 @@
     renderReadability(r.readability);
     renderWcag(r.wcag_summary);
 
+    dbg(`rendering ${r.issues.length} issues…`);
     await yield_();
 
     renderIssues(r.issues);
+
+    // Replace debug message with real preview now that everything is done.
+    previewPane.innerHTML = previewHtml;
+    console.log('[renderOutput] complete');
   }
 
   function scoreColor(s) {
