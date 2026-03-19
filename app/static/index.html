@@ -736,8 +736,10 @@
       const { job_id } = await res.json();
       console.log('[convert] job_id=', job_id);
       const data = await pollJob(job_id);
-      console.log('[convert] pollJob resolved, markdown length=',
-        data?.markdown?.length, 'issues=', data?.report?.issues?.length);
+      const mdLen = data?.markdown?.length ?? 'MISSING';
+      const issueCount = data?.report?.issues?.length ?? 'MISSING';
+      console.log('[convert] pollJob resolved, markdown length=', mdLen, 'issues=', issueCount);
+      alert(`DEBUG: pollJob resolved.\nmarkdown length: ${mdLen}\nissues: ${issueCount}\n\nClick OK to render.`);
       currentMarkdown = data.markdown;
       currentFilename = data.filename;
       console.log('[convert] calling renderOutput…');
@@ -745,6 +747,7 @@
       console.log('[convert] renderOutput returned');
     } catch (e) {
       console.error('[convert] caught error:', e);
+      alert(`DEBUG: caught error:\n${e}`);
       showError(e.message || 'An unexpected error occurred.');
     } finally {
       console.log('[convert] finally block running');
