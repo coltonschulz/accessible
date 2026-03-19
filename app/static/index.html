@@ -774,8 +774,11 @@
       ? data.markdown.slice(0, PREVIEW_LIMIT) + '\n\n*[Preview truncated — full content available in the Markdown tab below]*'
       : data.markdown;
     previewPane.innerHTML = simpleMarkdownToHtml(previewMd);
-    // Markdown
-    markdownTA.value = data.markdown;
+    // Defer textarea assignment until the Markdown tab is opened — setting
+    // .value on a large string (100 KB+) synchronously freezes the main
+    // thread while the browser computes line positions and layout.
+    markdownTA.value = '';
+    markdownTA.dataset.pending = data.markdown;
     // Download button
     downloadBtn.style.display = '';
     // Score card
@@ -951,11 +954,21 @@
     document.getElementById('tab-markdown').classList.toggle('active', !isPreview);
     document.getElementById('tab-preview').setAttribute('aria-pressed', isPreview);
     document.getElementById('tab-markdown').setAttribute('aria-pressed', !isPreview);
+    // Flush deferred markdown into the textarea the first time the tab opens.
+    if (!isPreview && markdownTA.dataset.pending) {
+      markdownTA.value = markdownTA.dataset.pending;
+      delete markdownTA.dataset.pending;
+    }
   }
 
   // ── Download ──────────────────────────────────────────────────────────────
   function downloadMarkdown() {
     if (!currentMarkdown) return;
+    // Ensure textarea is populated (may still be deferred if tab was never opened).
+    if (markdownTA.dataset.pending) {
+      markdownTA.value = markdownTA.dataset.pending;
+      delete markdownTA.dataset.pending;
+    }
     const blob = new Blob([currentMarkdown], { type: 'text/markdown;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
