@@ -168,6 +168,7 @@ def check_heading_hierarchy(text: str) -> list[dict[str, Any]]:
         if curr_level > prev_level + 1:
             issues.append({
                 "line": curr_line,
+                "rule": "heading-hierarchy",
                 "message": (
                     f"Heading level skipped: H{prev_level} → H{curr_level}. "
                     "All heading levels must be used in sequence."
@@ -190,6 +191,7 @@ def check_has_h1(text: str) -> list[dict[str, Any]]:
     if not h1_lines:
         issues.append({
             "line": 1,
+            "rule": "missing-h1",
             "message": "Document is missing an H1 heading (page title).",
             "wcag": "2.4.2",
             "severity": "error",
@@ -198,6 +200,7 @@ def check_has_h1(text: str) -> list[dict[str, Any]]:
         for ln in h1_lines[1:]:
             issues.append({
                 "line": ln,
+                "rule": "multiple-h1",
                 "message": (
                     f"Multiple H1 headings found (line {h1_lines[0]} and "
                     f"line {ln}). Documents should have a single H1."
@@ -219,6 +222,7 @@ def check_image_alt_text(text: str) -> list[dict[str, Any]]:
             if not alt:
                 issues.append({
                     "line": lineno,
+                    "rule": "missing-alt",
                     "message": "Image is missing alt text.",
                     "wcag": "1.1.1",
                     "severity": "error",
@@ -226,6 +230,7 @@ def check_image_alt_text(text: str) -> list[dict[str, Any]]:
             elif alt.lower() in _GENERIC:
                 issues.append({
                     "line": lineno,
+                    "rule": "generic-alt",
                     "message": f'Image alt text "{alt}" is generic and not descriptive.',
                     "wcag": "1.1.1",
                     "severity": "warning",
@@ -253,6 +258,7 @@ def check_empty_links(text: str) -> list[dict[str, Any]]:
         for m in re.finditer(r"(?<!\()(https?://\S+)(?!\))", line):
             issues.append({
                 "line": lineno,
+                "rule": "bare-url",
                 "message": f'Bare URL used as link text: "{m.group(1)[:60]}".',
                 "wcag": "2.4.4",
                 "severity": "warning",
@@ -261,6 +267,7 @@ def check_empty_links(text: str) -> list[dict[str, Any]]:
             if m.group(1).strip().lower() in _BAD_TEXT:
                 issues.append({
                     "line": lineno,
+                    "rule": "nondescript-link",
                     "message": (
                         f'Non-descriptive link text: "{m.group(1)}". '
                         "Describe the link destination."
@@ -285,6 +292,7 @@ def check_table_headers(text: str) -> list[dict[str, Any]]:
             continue
         issues.append({
             "line": i + 1,
+            "rule": "table-header",
             "message": (
                 "Table may be missing a header separator row (`| --- |`). "
                 "Screen readers need headers to interpret table data."
@@ -310,6 +318,7 @@ def check_empty_headings(text: str) -> list[dict[str, Any]]:
         if m:
             issues.append({
                 "line": lineno,
+                "rule": "empty-heading",
                 "message": f"H{len(m.group(1))} heading has no content.",
                 "wcag": "1.3.1",
                 "severity": "error",
@@ -327,6 +336,7 @@ def check_inline_formatting_overuse(text: str) -> list[dict[str, Any]]:
         if re.match(r"^\*\*[^*]+\*\*$", stripped):
             issues.append({
                 "line": lineno,
+                "rule": "bold-overuse",
                 "message": (
                     "Entire paragraph is bold. Use bold sparingly for emphasis, "
                     "not as a substitute for headings."
@@ -343,6 +353,7 @@ def check_reading_level(text: str) -> list[dict[str, Any]]:
     if score < 20:
         return [{
             "line": None,
+            "rule": "reading-level",
             "message": (
                 f"Readability score: {score}/100 — Very Difficult. "
                 "Summary and findings sections should be readable at a general "
@@ -354,6 +365,7 @@ def check_reading_level(text: str) -> list[dict[str, Any]]:
     if score < 30:
         return [{
             "line": None,
+            "rule": "reading-level",
             "message": (
                 f"Readability score: {score}/100 — Difficult (post-graduate). "
                 "Technical regulatory content is expected here, but consider "
@@ -379,6 +391,7 @@ def check_all_caps(text: str) -> list[dict[str, Any]]:
         if caps_count / len(words) >= 0.6:
             issues.append({
                 "line": lineno,
+                "rule": "all-caps",
                 "message": (
                     "Excessive ALL CAPS text. Screen readers may read each "
                     "letter individually. Use title case or sentence case instead."
@@ -405,6 +418,7 @@ def check_color_references(text: str) -> list[dict[str, Any]]:
         if _PATTERN.search(line):
             issues.append({
                 "line": lineno,
+                "rule": "color-reference",
                 "message": (
                     "Color appears to be used as the only means of conveying "
                     "information. Provide a text-based alternative "
@@ -429,6 +443,7 @@ def check_unformatted_lists(text: str) -> list[dict[str, Any]]:
             if lineno > last_flagged + 1:
                 issues.append({
                     "line": lineno,
+                    "rule": "unformatted-list",
                     "message": (
                         "Manual bullet character detected. Use Markdown list "
                         "syntax (`- item` or `1. item`) so assistive technology "
@@ -455,6 +470,7 @@ def check_duplicate_headings(text: str) -> list[dict[str, Any]]:
         if key in seen:
             issues.append({
                 "line": lineno,
+                "rule": "duplicate-heading",
                 "message": (
                     f'Duplicate heading "{raw}" (first appears at line '
                     f"{seen[key]}). Each heading must be unique so screen "
@@ -485,6 +501,7 @@ def check_table_context(text: str) -> list[dict[str, Any]]:
         if not has_context:
             issues.append({
                 "line": i + 1,
+                "rule": "table-context",
                 "message": (
                     "Table appears without a preceding heading or description. "
                     "Add a heading or introductory sentence so users understand "
@@ -546,6 +563,7 @@ def build_compliance_report(
     for img_name in embedded_images:
         issues.append({
             "line": None,
+            "rule": "embedded-image",
             "message": (
                 f'Embedded image "{Path(img_name).name}" was not extracted. '
                 "Host separately and add descriptive alt text in the Markdown."

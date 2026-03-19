@@ -552,6 +552,18 @@
       <div id="issues-list"></div>
     </section>
 
+    <section id="fix-section" style="display:none">
+      <div style="padding: 16px 20px; border-top: 1px solid var(--border)">
+        <button id="fix-btn" style="width:100%;padding:10px;background:var(--accent-dim);color:#fff;border:none;border-radius:var(--radius);font-size:13px;font-weight:600;cursor:pointer">
+          ✦ Fix Issues Automatically
+        </button>
+        <div id="fix-log" style="display:none;margin-top:12px;font-size:12px;line-height:1.7"></div>
+        <button id="reaudit-btn" style="display:none;width:100%;margin-top:10px;padding:8px;background:transparent;color:var(--accent);border:1px solid var(--accent);border-radius:var(--radius);font-size:13px;cursor:pointer">
+          ↺ Re-run Audit
+        </button>
+      </div>
+    </section>
+
   </aside>
 
   <!-- ── Right panel ── -->
@@ -586,6 +598,7 @@
   let fileId = null;          // set after successful POST /upload
   let currentMarkdown = '';
   let currentFilename = '';
+  let currentReport = null;
 
   // ── DOM refs ─────────────────────────────────────────────────────────────
   const dropZone      = document.getElementById('drop-zone');
@@ -615,6 +628,10 @@
   const markdownPane  = document.getElementById('markdown-pane');
   const markdownTA    = document.getElementById('markdown-textarea');
   const downloadBtn   = document.getElementById('download-btn');
+  const fixSection    = document.getElementById('fix-section');
+  const fixBtn        = document.getElementById('fix-btn');
+  const fixLog        = document.getElementById('fix-log');
+  const reauditBtn    = document.getElementById('reaudit-btn');
 
   // ── File selection ────────────────────────────────────────────────────────
   dropZone.addEventListener('click', () => fileInput.click());
@@ -782,6 +799,7 @@
 
     downloadBtn.style.display = '';
     const r = data.report;
+    currentReport = r;
     scoreCard.style.display = '';
     scoreValue.textContent = r.score;
     scoreValue.style.color = scoreColor(r.score);
@@ -792,6 +810,15 @@
 
     await yield_();
     renderIssues(r.issues);
+    if (r.issues.length > 0) {
+      fixSection.style.display = '';
+      fixLog.style.display = 'none';
+      fixLog.innerHTML = '';
+      reauditBtn.style.display = 'none';
+      fixBtn.style.display = '';
+      fixBtn.disabled = false;
+      fixBtn.textContent = '✦ Fix Issues Automatically';
+    }
   }
 
   function scoreColor(s) {
@@ -1184,6 +1211,286 @@
     html += '</table>';
     return html;
   }
+
+  // ── Auto-fix pipeline ─────────────────────────────────────────────────────
+
+  // Common insurance/regulatory acronyms that should stay in ALL CAPS.
+  const _ACRONYMS = new Set([
+    'ADA','WCAG','PDF','HTML','CSS','URL','API','ID','OK','US','ND','SD',
+    'LLC','INC','LTD','CORP','CEO','CFO','COO','CTO','VP','HR','IT','FAQ',
+    'UI','UX','IP','TV','GPS','SMS','SSN','EIN','TIN','DOI','SEC','IRS',
+    'DOL','ERISA','AML','KYC','CPA','JD','MD','PHD','MBA','DC','PR','GU',
+    'NAIC','ERM','RBC','GAAP','IFRS','FASB','AM','PM','EST','CST','MST',
+    'PST','UTC','GMT','USA','USD','NDOI','SDOI','ND','SD','MT','WY','CO',
+    'NE','KS','MN','IA','MO','WI','IL','IN','OH','MI','NY','PA','NJ','CT',
+    'MA','RI','VT','NH','ME','DE','MD','VA','WV','NC','SC','GA','FL','AL',
+    'TN','KY','MS','AR','LA','TX','OK','NM','AZ','NV','UT','ID','OR','WA',
+    'AK','HI','AC','DC','ATM','PIN','CVV','ROI','KPI','SLA','EOB','EOC',
+  ]);
+
+  const FIXERS = [
+    {
+      rule: 'missing-h1',
+      name: 'Add missing H1 heading',
+      fix(md) {
+        if (/^# \S/m.test(md)) return [md, null];
+        // Derive a title: clean up the filename or grab first meaningful line.
+        let title = currentFilename.replace(/\.md$/, '').replace(/[_-]+/g, ' ').trim();
+        for (const line of md.split('\n').slice(0, 15)) {
+          const t = line.replace(/^[#*_`>\-\s|]+/, '').trim();
+          if (t.length >= 5 && t.length <= 120) { title = t; break; }
+        }
+        return [`# ${title}\n\n${md}`, `Added H1 heading: "${title}"`];
+      },
+    },
+    {
+      rule: 'multiple-h1',
+      name: 'Remove duplicate H1 headings',
+      fix(md) {
+        let first = true;
+        let count = 0;
+        const fixed = md.replace(/^# (.+)/gm, (line, text) => {
+          if (first) { first = false; return line; }
+          count++;
+          return `## ${text}`;  // Demote extra H1s to H2
+        });
+        return count > 0
+          ? [fixed, `Demoted ${count} extra H1 heading(s) to H2`]
+          : [md, null];
+      },
+    },
+    {
+      rule: 'heading-hierarchy',
+      name: 'Fix skipped heading levels',
+      fix(md) {
+        const lines = md.split('\n');
+        let prevLevel = 0;
+        let changed = 0;
+        const out = lines.map(line => {
+          const m = line.match(/^(#{1,6})\s+(.+)/);
+          if (!m) { if (line.trim() === '' || !/^#/.test(line)) prevLevel = prevLevel; return line; }
+          const curr = m[1].length;
+          if (prevLevel > 0 && curr > prevLevel + 1) {
+            const fixed = prevLevel + 1;
+            changed++;
+            prevLevel = fixed;
+            return '#'.repeat(fixed) + ' ' + m[2];
+          }
+          prevLevel = curr;
+          return line;
+        });
+        return changed > 0
+          ? [out.join('\n'), `Fixed ${changed} skipped heading level(s)`]
+          : [md, null];
+      },
+    },
+    {
+      rule: 'all-caps',
+      name: 'Convert ALL CAPS text to sentence case',
+      fix(md) {
+        let count = 0;
+        const fixed = md.split('\n').map(line => {
+          if (/^#|^`{3}/.test(line)) return line;
+          return line.replace(/\b([A-Z]{4,})\b/g, word => {
+            if (_ACRONYMS.has(word)) return word;
+            count++;
+            return word[0] + word.slice(1).toLowerCase();
+          });
+        }).join('\n');
+        return count > 0
+          ? [fixed, `Converted ${count} ALL CAPS word(s) to sentence case`]
+          : [md, null];
+      },
+    },
+    {
+      rule: 'unformatted-list',
+      name: 'Convert manual bullets to Markdown list syntax',
+      fix(md) {
+        let count = 0;
+        const fixed = md.replace(/^([•·▪◦▸►▶❖–—])\s+(.+)/gm, (_, _b, text) => {
+          count++;
+          return `- ${text}`;
+        });
+        return count > 0
+          ? [fixed, `Converted ${count} manual bullet(s) to Markdown list items`]
+          : [md, null];
+      },
+    },
+    {
+      rule: 'missing-alt',
+      name: 'Add placeholder alt text to images',
+      fix(md) {
+        let count = 0;
+        const fixed = md.replace(/!\[\]\(([^)]+)\)/g, (_, src) => {
+          count++;
+          return `![Image — add description here](${src})`;
+        });
+        return count > 0
+          ? [fixed, `Added placeholder alt text to ${count} image(s) — please replace with descriptive text`]
+          : [md, null];
+      },
+    },
+    {
+      rule: 'table-header',
+      name: 'Add header separator rows to tables',
+      fix(md) {
+        let count = 0;
+        const lines = md.split('\n');
+        const out = [];
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          const next = lines[i + 1] || '';
+          // Table row that is NOT itself a separator and whose next line isn't either
+          if (/^\|/.test(line) && !/^\s*\|[\s|:-]+\|/.test(line) &&
+              !/^\s*\|[\s|:-]+\|/.test(next)) {
+            // Only add separator after the FIRST row of a table (no preceding table row)
+            const prev = lines[i - 1] || '';
+            if (!/^\|/.test(prev)) {
+              const cols = line.split('|').filter((_, idx, a) => idx > 0 && idx < a.length - 1).length;
+              out.push(line);
+              out.push('|' + ' --- |'.repeat(Math.max(cols, 1)));
+              count++;
+              continue;
+            }
+          }
+          out.push(line);
+        }
+        return count > 0
+          ? [out.join('\n'), `Added header separator row to ${count} table(s)`]
+          : [md, null];
+      },
+    },
+    {
+      rule: 'empty-heading',
+      name: 'Remove empty headings',
+      fix(md) {
+        let count = 0;
+        const fixed = md.replace(/^#{1,6}\s*$/gm, () => { count++; return ''; });
+        return count > 0
+          ? [fixed, `Removed ${count} empty heading(s)`]
+          : [md, null];
+      },
+    },
+    {
+      rule: 'bold-overuse',
+      name: 'Convert fully-bold paragraphs to headings',
+      fix(md) {
+        let count = 0;
+        const fixed = md.replace(/^\*\*([^*\n]{10,})\*\*$/gm, (_, text) => {
+          count++;
+          return text.length <= 80 ? `### ${text}` : text;
+        });
+        return count > 0
+          ? [fixed, `Converted ${count} fully-bold line(s) to headings or plain text`]
+          : [md, null];
+      },
+    },
+  ];
+
+  // Issues that cannot be auto-fixed — shown as manual review items.
+  const MANUAL_RULES = new Set([
+    'color-reference', 'reading-level', 'duplicate-heading',
+    'table-context', 'bare-url', 'nondescript-link', 'generic-alt', 'embedded-image',
+  ]);
+
+  async function runAutoFix() {
+    fixBtn.disabled = true;
+    fixBtn.textContent = 'Fixing…';
+    fixLog.style.display = '';
+    fixLog.innerHTML = '';
+    reauditBtn.style.display = 'none';
+
+    const yield_ = () => new Promise(r => setTimeout(r, 0));
+
+    // Collect which rules are present in current issues.
+    const activeRules = new Set((currentReport?.issues || []).map(i => i.rule));
+
+    let fixedMd = currentMarkdown;
+    let totalFixed = 0;
+
+    const logEntry = (icon, msg) => {
+      const el = document.createElement('div');
+      el.style.cssText = 'padding:3px 0;border-bottom:1px solid var(--border)';
+      el.textContent = `${icon} ${msg}`;
+      fixLog.appendChild(el);
+    };
+
+    for (const fixer of FIXERS) {
+      if (!activeRules.has(fixer.rule)) continue;
+      fixBtn.textContent = `Fixing: ${fixer.name}…`;
+      await yield_();
+      const [newMd, desc] = fixer.fix(fixedMd);
+      if (desc) {
+        fixedMd = newMd;
+        totalFixed++;
+        logEntry('✅', desc);
+      } else {
+        logEntry('—', `${fixer.name}: nothing to change`);
+      }
+      await yield_();
+    }
+
+    // Report manual-review items
+    for (const rule of activeRules) {
+      if (MANUAL_RULES.has(rule)) {
+        const issue = (currentReport?.issues || []).find(i => i.rule === rule);
+        if (issue) logEntry('⚠️', `Manual review: ${issue.message.split('.')[0]}`);
+      }
+    }
+
+    currentMarkdown = fixedMd;
+    // Update preview with fixed markdown
+    const previewMd = fixedMd.length > 5000
+      ? fixedMd.slice(0, 5000) + '\n\n*[Preview truncated — full content in Markdown tab]*'
+      : fixedMd;
+    previewPane.innerHTML = simpleMarkdownToHtml(previewMd);
+
+    const summary = totalFixed > 0
+      ? `Fixed ${totalFixed} issue category${totalFixed !== 1 ? 's' : ''}.`
+      : 'No automatic fixes applied.';
+    fixBtn.textContent = `✦ ${summary}`;
+
+    if (totalFixed > 0) {
+      reauditBtn.style.display = '';
+    }
+  }
+
+  fixBtn.addEventListener('click', runAutoFix);
+
+  reauditBtn.addEventListener('click', async () => {
+    reauditBtn.disabled = true;
+    reauditBtn.textContent = 'Re-auditing…';
+    try {
+      const form = new FormData();
+      form.append('markdown', currentMarkdown);
+      const res = await fetch('/reaudit', { method: 'POST', body: form });
+      if (!res.ok) throw new Error('Re-audit request failed.');
+      const report = await res.json();
+      currentReport = report;
+      // Re-render score card and issues
+      scoreValue.textContent = report.score;
+      scoreValue.style.color = scoreColor(report.score);
+      renderTier(report.conformance_tier);
+      renderSeverityCounts(report.issues);
+      renderReadability(report.readability);
+      renderWcag(report.wcag_summary);
+      renderIssues(report.issues);
+      fixLog.innerHTML = '';
+      fixLog.style.display = 'none';
+      reauditBtn.style.display = 'none';
+      fixBtn.disabled = false;
+      fixBtn.textContent = report.issues.length > 0
+        ? '✦ Fix Issues Automatically'
+        : '✦ All issues resolved!';
+      fixBtn.disabled = report.issues.length === 0;
+      fixSection.style.display = report.issues.length > 0 ? '' : 'none';
+    } catch (e) {
+      showError(e.message);
+    } finally {
+      reauditBtn.disabled = false;
+      reauditBtn.textContent = '↺ Re-run Audit';
+    }
+  });
 </script>
 
 </body>

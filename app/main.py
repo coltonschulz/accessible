@@ -263,6 +263,24 @@ async def convert_status(job_id: str) -> dict[str, Any]:
     return job
 
 
+@app.post("/reaudit")
+async def reaudit(markdown: str = Form(...)) -> dict[str, Any]:
+    """Re-run compliance checks on already-converted Markdown.
+
+    Called by the client after applying auto-fixes so it can display
+    an updated score without re-converting the original file.
+
+    Args:
+        markdown: The (possibly edited) Markdown source.
+
+    Returns:
+        A compliance report dict identical in shape to the one produced
+        by :func:`build_compliance_report`.
+    """
+    from app.processor import build_compliance_report
+    return build_compliance_report(markdown, [])
+
+
 @app.get("/debug/jobs")
 async def debug_jobs() -> dict[str, Any]:
     """Return current job-file state and pending uploads (for debugging)."""
