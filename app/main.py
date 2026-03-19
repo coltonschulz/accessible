@@ -84,9 +84,10 @@ def _monitor_worker(
 ) -> None:
     """Wait for the worker process in a daemon thread.
 
-    Uses subprocess.Popen.wait() in a plain background thread — completely
-    outside the asyncio event loop — so the event loop is never stalled by
-    subprocess child-watcher callbacks.
+    Uses subprocess.Popen.communicate() in a plain background thread —
+    completely outside the asyncio event loop — so the event loop is never
+    stalled by subprocess child-watcher callbacks.  communicate() also drains
+    the stderr pipe so the worker is never blocked by a full buffer.
 
     Args:
         job_id: UUID of the job being monitored.
@@ -94,18 +95,21 @@ def _monitor_worker(
         timeout: Seconds before the worker is killed.
     """
     try:
-        proc.wait(timeout=timeout)
+        _, stderr_bytes = proc.communicate(timeout=timeout)
         if proc.returncode != 0:
-            # Worker crashed without writing a terminal state.
+            err_text = (stderr_bytes or b"").decode("utf-8", errors="replace").strip()
+            print(f"[worker {job_id[:8]}] exited {proc.returncode}: {err_text}",
+                  flush=True)
             job = _read_job(job_id) or {}
             if job.get("status") == "pending":
-                _write_job(job_id, {
-                    "status": "error",
-                    "detail": "Conversion process exited unexpectedly.",
-                })
+                detail = err_text or "Conversion process exited unexpectedly."
+                _write_job(job_id, {"status": "error", "detail": detail})
+        else:
+            print(f"[worker {job_id[:8]}] completed ok", flush=True)
     except subprocess.TimeoutExpired:
         proc.kill()
-        proc.wait()  # reap zombie
+        proc.communicate()  # drain + reap
+        print(f"[worker {job_id[:8]}] killed after {timeout}s timeout", flush=True)
         _write_job(job_id, {
             "status": "error",
             "detail": (
@@ -208,6 +212,7 @@ async def convert(file_id: str = Form(...)) -> dict[str, str]:
     job_id = str(uuid.uuid4())
     _write_job(job_id, {"status": "pending"})
 
+    print(f"[worker {job_id[:8]}] spawning for {upload['filename']}", flush=True)
     proc = subprocess.Popen(  # noqa: S603 — args are internal UUIDs/paths
         [
             sys.executable,
@@ -219,7 +224,7 @@ async def convert(file_id: str = Form(...)) -> dict[str, str]:
             str(_JOBS_DIR),
         ],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,  # captured and drained by _monitor_worker thread
     )
 
     # Monitor the worker in a daemon thread — no asyncio involvement.
@@ -256,6 +261,25 @@ async def convert_status(job_id: str) -> dict[str, Any]:
     if job.get("status") in ("complete", "error"):
         _delete_job(job_id)
     return job
+
+
+@app.get("/debug/jobs")
+async def debug_jobs() -> dict[str, Any]:
+    """Return current job-file state and pending uploads (for debugging)."""
+    jobs: dict[str, Any] = {}
+    for f in _JOBS_DIR.iterdir():
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            # Truncate markdown so the response stays readable.
+            if "markdown" in data:
+                data["markdown"] = data["markdown"][:200] + "…"
+            jobs[f.stem] = data
+        except Exception as exc:
+            jobs[f.stem] = {"error": str(exc)}
+    return {
+        "jobs": jobs,
+        "pending_uploads": list(_uploads.keys()),
+    }
 
 
 @app.post("/download-markdown")
