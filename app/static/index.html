@@ -735,7 +735,7 @@
       const data = await pollJob(job_id);
       currentMarkdown = data.markdown;
       currentFilename = data.filename;
-      renderOutput(data);
+      await renderOutput(data);
     } catch (e) {
       showError(e.message || 'An unexpected error occurred.');
     } finally {
@@ -763,25 +763,28 @@
   }
 
   // ── Render output ─────────────────────────────────────────────────────────
-  function renderOutput(data) {
+  async function renderOutput(data) {
+    const yield_ = () => new Promise(r => setTimeout(r, 0));
+
     // PDF quality notice
     pdfWarning.style.display = data.pdf_quality_warning ? '' : 'none';
-    // Preview — cap at 5 000 chars to avoid catastrophic regex backtracking
-    // on large PDFs with many unmatched asterisks. Full content is in the
-    // Markdown tab for copy / download.
+
+    // Preview — cap at 5 000 chars to avoid regex backtracking on large PDFs.
+    // Full content stays in currentMarkdown for copy / download.
     const PREVIEW_LIMIT = 5000;
     const previewMd = data.markdown.length > PREVIEW_LIMIT
       ? data.markdown.slice(0, PREVIEW_LIMIT) + '\n\n*[Preview truncated — full content available in the Markdown tab below]*'
       : data.markdown;
+    // Yield before the markdown render so the browser can paint the
+    // progress-stopped state first, keeping the UI responsive.
+    await yield_();
     previewPane.innerHTML = simpleMarkdownToHtml(previewMd);
-    // Defer textarea assignment until the Markdown tab is opened — setting
-    // .value on a large string (100 KB+) synchronously freezes the main
-    // thread while the browser computes line positions and layout.
-    markdownTA.value = '';
-    markdownTA.dataset.pending = data.markdown;
-    // Download button
+    markdownTA.value = '';   // populated lazily on tab open via currentMarkdown
+
+    await yield_();
+
+    // Download button + score card
     downloadBtn.style.display = '';
-    // Score card
     const r = data.report;
     scoreCard.style.display = '';
     scoreValue.textContent = r.score;
@@ -790,6 +793,9 @@
     renderSeverityCounts(r.issues);
     renderReadability(r.readability);
     renderWcag(r.wcag_summary);
+
+    await yield_();
+
     renderIssues(r.issues);
   }
 
@@ -954,21 +960,17 @@
     document.getElementById('tab-markdown').classList.toggle('active', !isPreview);
     document.getElementById('tab-preview').setAttribute('aria-pressed', isPreview);
     document.getElementById('tab-markdown').setAttribute('aria-pressed', !isPreview);
-    // Flush deferred markdown into the textarea the first time the tab opens.
-    if (!isPreview && markdownTA.dataset.pending) {
-      markdownTA.value = markdownTA.dataset.pending;
-      delete markdownTA.dataset.pending;
+    // Populate the textarea the first time the Markdown tab is opened.
+    // currentMarkdown is already set; we just defer the expensive .value
+    // assignment until the user actually wants to see the raw source.
+    if (!isPreview && currentMarkdown && !markdownTA.value) {
+      markdownTA.value = currentMarkdown;
     }
   }
 
   // ── Download ──────────────────────────────────────────────────────────────
   function downloadMarkdown() {
     if (!currentMarkdown) return;
-    // Ensure textarea is populated (may still be deferred if tab was never opened).
-    if (markdownTA.dataset.pending) {
-      markdownTA.value = markdownTA.dataset.pending;
-      delete markdownTA.dataset.pending;
-    }
     const blob = new Blob([currentMarkdown], { type: 'text/markdown;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
