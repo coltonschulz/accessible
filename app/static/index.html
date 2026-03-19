@@ -724,33 +724,22 @@
     startProgress();
 
     try {
-      console.log('[convert] posting to /convert, fileId=', fileId);
       const form = new FormData();
       form.append('file_id', fileId);
       const res = await fetch('/convert', { method: 'POST', body: form });
-      console.log('[convert] /convert response status:', res.status);
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
         throw new Error(err.detail || 'Could not start conversion.');
       }
       const { job_id } = await res.json();
-      console.log('[convert] job_id=', job_id);
       const data = await pollJob(job_id);
-      const mdLen = data?.markdown?.length ?? 'MISSING';
-      const issueCount = data?.report?.issues?.length ?? 'MISSING';
-      console.log('[convert] pollJob resolved, markdown length=', mdLen, 'issues=', issueCount);
-      alert(`DEBUG: pollJob resolved.\nmarkdown length: ${mdLen}\nissues: ${issueCount}\n\nClick OK to render.`);
       currentMarkdown = data.markdown;
       currentFilename = data.filename;
-      console.log('[convert] calling renderOutput…');
       await renderOutput(data);
-      console.log('[convert] renderOutput returned');
     } catch (e) {
-      console.error('[convert] caught error:', e);
-      alert(`DEBUG: caught error:\n${e}`);
+      console.error('[convert] error:', e);
       showError(e.message || 'An unexpected error occurred.');
     } finally {
-      console.log('[convert] finally block running');
       stopProgress();
       convertBtn.disabled = false;
       convertBtn.textContent = 'Run Accessibility Audit';
@@ -761,12 +750,9 @@
     const MAX_POLLS = 140; // ~3.5 minutes at 1.5 s intervals — matches server timeout
     for (let i = 0; i < MAX_POLLS; i++) {
       await new Promise(r => setTimeout(r, 1500));
-      console.log(`[pollJob] poll #${i+1} for`, jobId);
       const res = await fetch(`/convert/status/${jobId}`);
-      console.log(`[pollJob] poll #${i+1} status=`, res.status);
       if (!res.ok) throw new Error('Lost track of conversion job — please try again.');
       const job = await res.json();
-      console.log(`[pollJob] poll #${i+1} job.status=`, job.status);
       if (job.status === 'complete') return job;
       if (job.status === 'error') throw new Error(job.detail || 'Conversion failed.');
       // status === 'pending' → keep polling
@@ -780,38 +766,18 @@
   // ── Render output ─────────────────────────────────────────────────────────
   async function renderOutput(data) {
     const yield_ = () => new Promise(r => setTimeout(r, 0));
-    const dbg = (msg) => {
-      console.log('[renderOutput]', msg);
-      previewPane.innerHTML = `<pre style="padding:1rem;white-space:pre-wrap">[debug] ${msg}</pre>`;
-    };
 
-    dbg(`data received — markdown ${data.markdown.length} chars, ` +
-        `${data.report?.issues?.length ?? '?'} issues`);
-    await yield_();
-
-    // PDF quality notice
     pdfWarning.style.display = data.pdf_quality_warning ? '' : 'none';
-
-    dbg('slicing preview markdown…');
-    await yield_();
 
     const PREVIEW_LIMIT = 5000;
     const previewMd = data.markdown.length > PREVIEW_LIMIT
-      ? data.markdown.slice(0, PREVIEW_LIMIT) + '\n\n*(preview truncated)*'
+      ? data.markdown.slice(0, PREVIEW_LIMIT) + '\n\n*[Preview truncated — full content available in the Markdown tab]*'
       : data.markdown;
 
-    dbg('running simpleMarkdownToHtml…');
     await yield_();
-
-    const previewHtml = simpleMarkdownToHtml(previewMd);
-
-    dbg('assigning innerHTML…');
-    await yield_();
-
-    previewPane.innerHTML = previewHtml;
+    previewPane.innerHTML = simpleMarkdownToHtml(previewMd);
     markdownTA.value = '';
 
-    dbg('rendering score card…');
     await yield_();
 
     downloadBtn.style.display = '';
@@ -824,14 +790,8 @@
     renderReadability(r.readability);
     renderWcag(r.wcag_summary);
 
-    dbg(`rendering ${r.issues.length} issues…`);
     await yield_();
-
     renderIssues(r.issues);
-
-    // Replace debug message with real preview now that everything is done.
-    previewPane.innerHTML = previewHtml;
-    console.log('[renderOutput] complete');
   }
 
   function scoreColor(s) {
@@ -1178,16 +1138,28 @@
         i++; continue;
       }
 
-      // Paragraph: collect non-blank, non-special lines
+      // Paragraph: collect non-blank, non-special lines.
+      // IMPORTANT: exclude list markers only when followed by whitespace
+      // ([-*+]\s) so that lines like **bold** or *italic* (starting with *
+      // but no trailing space) don't get excluded and cause an infinite loop.
       const paraLines = [];
       while (i < lines.length && lines[i].trim() !== '' &&
-             !/^(#{1,6}|>|[-*+]|\d+\.|`{3}|\|)/.test(lines[i]) &&
+             !/^#{1,6}\s/.test(lines[i]) &&
+             !/^>\s?/.test(lines[i]) &&
+             !/^[-*+]\s/.test(lines[i]) &&
+             !/^\d+\.\s/.test(lines[i]) &&
+             !/^`{3}/.test(lines[i]) &&
+             !/^\|/.test(lines[i]) &&
              !/^(\*{3,}|-{3,}|_{3,})\s*$/.test(lines[i])) {
         paraLines.push(lines[i]);
         i++;
       }
       if (paraLines.length) {
         out.push(`<p>${inline(paraLines.join(' '))}</p>`);
+      } else {
+        // Safety: if no handler matched and paraLines is empty, advance i to
+        // prevent an infinite loop on any edge-case line.
+        i++;
       }
     }
 
