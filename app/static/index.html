@@ -1032,12 +1032,13 @@
       s = esc(s);
       // Fenced inline code
       s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
-      // Bold + italic
-      s = s.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+      // Bold + italic — use [^*\n]+ instead of .+? to prevent catastrophic
+      // backtracking on strings with many unmatched asterisks (e.g. PDFs).
+      s = s.replace(/\*\*\*([^*\n]+)\*\*\*/g, '<strong><em>$1</em></strong>');
       // Bold
-      s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
       // Italic
-      s = s.replace(/\*(.+?)\*/g, '<em>$1</em>');
+      s = s.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
       // Images
       s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g,
         (_, alt, src) => `<img src="${src}" alt="${alt}" />`);
