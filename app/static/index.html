@@ -381,18 +381,19 @@
     }
     .toolbar-spacer { flex: 1; }
     #download-btn {
-      padding: 4px 12px;
-      background: var(--surface);
-      color: var(--text);
-      border: 1px solid var(--border);
+      padding: 6px 16px;
+      background: var(--accent-dim);
+      color: #fff;
+      border: none;
       border-radius: var(--radius);
       font-family: var(--font-sans);
       font-size: 13px;
+      font-weight: 600;
       cursor: pointer;
-      transition: border-color 0.15s;
+      transition: background 0.15s;
       display: none;
     }
-    #download-btn:hover { border-color: var(--accent); color: var(--accent); }
+    #download-btn:hover { background: var(--accent); }
 
     .pane {
       flex: 1;
@@ -1286,20 +1287,41 @@
     },
     {
       rule: 'all-caps',
-      name: 'Convert ALL CAPS text to sentence case',
+      name: 'Promote ALL CAPS lines to H2 headings',
       fix(md) {
-        let count = 0;
+        // Lines whose majority of words are ALL CAPS are almost certainly
+        // section titles in insurance/regulatory PDFs — promote to ## heading.
+        // Isolated caps words in otherwise mixed lines get title-cased instead.
+        let promoted = 0;
+        let converted = 0;
+        const toTitleCase = str => str.replace(/\b([A-Za-z]+)\b/g, w =>
+          _ACRONYMS.has(w.toUpperCase()) ? w.toUpperCase()
+            : w[0].toUpperCase() + w.slice(1).toLowerCase()
+        );
         const fixed = md.split('\n').map(line => {
-          if (/^#|^`{3}/.test(line)) return line;
+          if (/^#|^`{3}|\|/.test(line)) return line;
+          const stripped = line.trim();
+          if (!stripped) return line;
+          // Measure caps density (same threshold as the checker: ≥60% of ≥4 words)
+          const words = stripped.match(/\b[A-Za-z]{3,}\b/g) || [];
+          if (words.length >= 4) {
+            const caps = words.filter(w => w === w.toUpperCase()).length;
+            if (caps / words.length >= 0.6) {
+              promoted++;
+              return `## ${toTitleCase(stripped)}`;
+            }
+          }
+          // Mixed line — just title-case any stray ALL CAPS words
           return line.replace(/\b([A-Z]{4,})\b/g, word => {
             if (_ACRONYMS.has(word)) return word;
-            count++;
+            converted++;
             return word[0] + word.slice(1).toLowerCase();
           });
         }).join('\n');
-        return count > 0
-          ? [fixed, `Converted ${count} ALL CAPS word(s) to sentence case`]
-          : [md, null];
+        const parts = [];
+        if (promoted)  parts.push(`Promoted ${promoted} ALL CAPS line(s) to H2 headings`);
+        if (converted) parts.push(`converted ${converted} isolated caps word(s) to sentence case`);
+        return parts.length ? [fixed, parts.join('; ')] : [md, null];
       },
     },
     {
