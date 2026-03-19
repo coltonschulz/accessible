@@ -724,21 +724,30 @@
     startProgress();
 
     try {
+      console.log('[convert] posting to /convert, fileId=', fileId);
       const form = new FormData();
       form.append('file_id', fileId);
       const res = await fetch('/convert', { method: 'POST', body: form });
+      console.log('[convert] /convert response status:', res.status);
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
         throw new Error(err.detail || 'Could not start conversion.');
       }
       const { job_id } = await res.json();
+      console.log('[convert] job_id=', job_id);
       const data = await pollJob(job_id);
+      console.log('[convert] pollJob resolved, markdown length=',
+        data?.markdown?.length, 'issues=', data?.report?.issues?.length);
       currentMarkdown = data.markdown;
       currentFilename = data.filename;
+      console.log('[convert] calling renderOutput…');
       await renderOutput(data);
+      console.log('[convert] renderOutput returned');
     } catch (e) {
+      console.error('[convert] caught error:', e);
       showError(e.message || 'An unexpected error occurred.');
     } finally {
+      console.log('[convert] finally block running');
       stopProgress();
       convertBtn.disabled = false;
       convertBtn.textContent = 'Run Accessibility Audit';
@@ -749,9 +758,12 @@
     const MAX_POLLS = 140; // ~3.5 minutes at 1.5 s intervals — matches server timeout
     for (let i = 0; i < MAX_POLLS; i++) {
       await new Promise(r => setTimeout(r, 1500));
+      console.log(`[pollJob] poll #${i+1} for`, jobId);
       const res = await fetch(`/convert/status/${jobId}`);
+      console.log(`[pollJob] poll #${i+1} status=`, res.status);
       if (!res.ok) throw new Error('Lost track of conversion job — please try again.');
       const job = await res.json();
+      console.log(`[pollJob] poll #${i+1} job.status=`, job.status);
       if (job.status === 'complete') return job;
       if (job.status === 'error') throw new Error(job.detail || 'Conversion failed.');
       // status === 'pending' → keep polling
